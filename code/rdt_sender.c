@@ -1,13 +1,18 @@
 /*
-rdt_sender.c simulates the behavior of a sender in a reliable data transfer protocol,
-ensuring that data is transmitted, acknowledged, and retransmitted if necessary
-while handling errors and timeouts.
+rdt_sender.c: Implementation of a reliable data transfer sender using sliding window protocol.
+Key features:
+- Implements sliding window with size of 10 packets
+- Handles packet retransmission on timeout
+- Processes cumulative acknowledgments
+- Implements fast retransmit after 3 duplicate ACKs
+- Manages timer for unacknowledged packets
 */
 
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <sys/types.h> 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -20,101 +25,268 @@ while handling errors and timeouts.
 #include"packet.h"
 #include"common.h"
 
-//define file descriptor for standard input which is 0
-#define STDIN_FD    0
-
-//deine the timeout duration in milliseconds for retransmitting packets
-#define RETRY  120 //millisecond
-
-//keeps track of the sequence number for the next packet to be sent
-int next_seqno=0;
-
-//represents the sequence number of the base packet in the sender's window.
-int send_base=0;
-
-//size of the sender's window (initially set to 1)
-int window_size = 1;
-
-//socekt file descriptor , and length of server's address structure
-int sockfd, serverlen;
-
-//server's address struct
-struct sockaddr_in serveraddr;
-
-//stores information about the timer used for retransmissions.
-struct itimerval timer; 
-
-//pointer to reference TCP packet structure for sending data
-tcp_packet *sndpkt;
-
-//pointer to reference TCP packet structure for receiving data
-tcp_packet *recvpkt;
-
-//signal mask used for signal handling
-sigset_t sigmask;       
-
+// Constants
+#define STDIN_FD    0              // Standard input file descriptor
+#define RETRY  120                 // Timeout duration in milliseconds
+#define WINDOW_SIZE 10             // Size of sliding window
 
 /*
-function resend_packets is a signal handler for SIGALRM, which is triggered when
-the timer expires.
-It checks if the signal is indeed SIGALRM (indicating a timeout).
-If it is a timeout, it logs a message, indicating that a timeout has occurred,
-and resends the packet sndpkt to the server using the sendto function.
-*/
-void resend_packets(int sig)
-{
-    if (sig == SIGALRM)
-    {
-        //Resend all packets range between 
-        //sendBase and nextSeqNum
-        VLOG(INFO, "Timout happend");
-        if(sendto(sockfd, sndpkt, TCP_HDR_SIZE + get_data_size(sndpkt), 0, 
-                    ( const struct sockaddr *)&serveraddr, serverlen) < 0)
-        {
-            error("sendto");
+ * Structure to track each packet in the sending window
+ * Contains:
+ * - Pointer to the packet data
+ * - Flags for tracking packet state
+ * - Timestamp of when packet was sent
+ */
+typedef struct {
+    tcp_packet *packet;            // Pointer to actual packet data
+    bool is_sent;                  // Flag indicating if packet has been sent
+    bool is_acked;                // Flag indicating if packet has been acknowledged
+    struct timeval sent_time;      // Time when packet was last sent
+} window_slot;
+
+/*
+ * Structure to maintain window state information
+ * Tracks:
+ * - Various sequence numbers for window management
+ * - Duplicate ACK handling
+ */
+struct {
+    int LastPacketAcked;          // Sequence number of last acknowledged packet
+    int LastPacketSent;           // Sequence number of last sent packet
+    int LastPacketAvailable;      // Highest sequence number available to send
+    int duplicate_ack_count;      // Count of duplicate ACKs received
+    int last_ack_received;        // Most recent ACK number received
+} window_state;
+
+/*
+ * Structure to track duplicate acknowledgments
+ * Used for implementing fast retransmit
+ */
+struct {
+    int ack_number;               // ACK number being tracked
+    int count;                    // Number of times this ACK has been received
+} dup_ack_tracker;
+
+/*
+ * Initialize the window state variables
+ * Sets all counters and sequence numbers to initial values
+ */
+void init_window_state() {
+    window_state.LastPacketAcked = 0;
+    window_state.LastPacketSent = 0;
+    window_state.LastPacketAvailable = 0;
+    window_state.duplicate_ack_count = 0;
+    window_state.last_ack_received = -1;
+    dup_ack_tracker.ack_number = -1;
+    dup_ack_tracker.count = 0;
+}
+
+/*
+ * Check if current window state meets all constraints:
+ * 1. LastPacketAcked <= LastPacketSent
+ * 2. LastPacketSent <= LastPacketAvailable
+ * 3. Window size limit not exceeded
+ */
+bool window_constraints_valid() {
+    return (window_state.LastPacketAcked <= window_state.LastPacketSent &&
+            window_state.LastPacketSent <= window_state.LastPacketAvailable &&
+            window_state.LastPacketSent - window_state.LastPacketAcked <= WINDOW_SIZE);
+}
+
+// Global variables
+window_slot sender_window[WINDOW_SIZE];  // Array of window slots
+int send_base = 0;                       // First unacked packet sequence number
+int next_seqno = 0;                      // Next sequence number to use
+int sockfd;                              // Socket file descriptor
+socklen_t serverlen;                     // Length of server address
+struct sockaddr_in serveraddr;           // Server address structure
+struct itimerval timer;                  // Timer for packet retransmission
+sigset_t sigmask;                        // Signal mask for timer management
+bool timer_running = false;              // Flag to track timer state
+
+/*
+ * Initialize the sender's window buffer
+ * Sets all slots to empty state
+ */
+void init_sender_window() {
+    for(int i = 0; i < WINDOW_SIZE; i++) {
+        sender_window[i].packet = NULL;
+        sender_window[i].is_sent = false;
+        sender_window[i].is_acked = false;
+    }
+}
+
+/*
+ * Calculate buffer slot for a sequence number
+ * Implements circular buffer using modulo operation
+ */
+int get_window_slot(int seqno) {
+    return seqno % WINDOW_SIZE;
+}
+
+/*
+ * Check if sending window is full
+ * Window is full if distance between next_seqno and send_base equals WINDOW_SIZE
+ */
+bool window_is_full() {
+    return next_seqno - send_base >= WINDOW_SIZE;
+}
+
+/*
+ * Timer management functions
+ */
+// Start timer if not already running
+void start_timer() {
+    if (!timer_running) {
+        sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
+        setitimer(ITIMER_REAL, &timer, NULL);
+        timer_running = true;
+        VLOG(DEBUG, "Timer started for packet %d", send_base);
+    }
+}
+
+// Stop timer if running
+void stop_timer() {
+    if (timer_running) {
+        sigprocmask(SIG_BLOCK, &sigmask, NULL);
+        timer_running = false;
+        VLOG(DEBUG, "Timer stopped");
+    }
+}
+
+// Reset timer by stopping and starting it
+void reset_timer() {
+    stop_timer();
+    start_timer();
+    VLOG(DEBUG, "Timer reset for packet %d", send_base);
+}
+
+/*
+ * Process received acknowledgment
+ * Handles:
+ * - Duplicate ACK detection
+ * - Fast retransmit after 3 duplicate ACKs
+ * - Window advancement
+ * - Buffer management
+ */
+void process_ack(tcp_packet *ack_pkt) {
+    int ack_no = ack_pkt->hdr.ackno;
+    
+    // Check for duplicate ACKs
+    if (ack_no == dup_ack_tracker.ack_number) {
+        dup_ack_tracker.count++;
+        
+        // Implement fast retransmit after 3 duplicate ACKs
+        if (dup_ack_tracker.count == 3) {
+            VLOG(INFO, "Three duplicate ACKs received for %d, retransmitting", ack_no);
+            int slot = get_window_slot(ack_no);
+            if (sender_window[slot].packet != NULL) {
+                // Retransmit the packet
+                sendto(sockfd, sender_window[slot].packet,
+                      TCP_HDR_SIZE + get_data_size(sender_window[slot].packet),
+                      0, (const struct sockaddr *)&serveraddr, serverlen);
+                reset_timer();
+            }
+            dup_ack_tracker.count = 0;
+        }
+    } else {
+        // New ACK received, reset duplicate counter
+        dup_ack_tracker.ack_number = ack_no;
+        dup_ack_tracker.count = 1;
+    }
+
+    // Process ACK if it advances the window
+    if (ack_no > window_state.LastPacketAcked) {
+        int num_acked = ack_no - window_state.LastPacketAcked;
+        
+        // Free ACKed packets
+        for (int i = 0; i < num_acked; i++) {
+            int slot = get_window_slot(window_state.LastPacketAcked + i);
+            if (sender_window[slot].packet != NULL) {
+                free(sender_window[slot].packet);
+                sender_window[slot].packet = NULL;
+                sender_window[slot].is_acked = true;
+                sender_window[slot].is_sent = false;
+            }
+        }
+        
+        // Update window state
+        window_state.LastPacketAcked = ack_no;
+        
+        // Manage timer based on remaining unacked packets
+        if (window_state.LastPacketAcked < window_state.LastPacketSent) {
+            reset_timer();
+        } else {
+            stop_timer();
         }
     }
 }
 
+/*
+ * Send a packet and update related state
+ * Handles:
+ * - Packet transmission
+ * - Timer management
+ * - State updates
+ */
+void send_packet(int slot) {
+    if (sendto(sockfd, sender_window[slot].packet,
+               TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+               (const struct sockaddr *)&serveraddr, serverlen) < 0) {
+        error("sendto failed");
+    }
+    
+    // Update packet state
+    sender_window[slot].is_sent = true;
+    gettimeofday(&sender_window[slot].sent_time, NULL);
+    
+    // Start timer for first unacked packet
+    if (next_seqno == send_base) {
+        start_timer();
+    }
+    
+    VLOG(DEBUG, "Sent packet %d", next_seqno);
+}
 
 /*
-The start_timer function is used to start the timer for packet timeouts.
-It unblocks the SIGALRM signal using sigprocmask.
-It sets the timer to the values stored in the timer struct using setitimer.
-*/
-void start_timer()
-{
-    sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
-    setitimer(ITIMER_REAL, &timer, NULL);
-}
-
-//The stop_timer function is used to stop the timer by blocking the SIGALRM signal
-//using sigprocmask.
-void stop_timer()
-{
-    sigprocmask(SIG_BLOCK, &sigmask, NULL);
-}
-
-
-/* The init_timer function is used to initialize the timer for packet timeouts.
- * init_timer: Initialize timer
- * delay: delay in milliseconds
- * sig_handler: signal handler function for re-sending unACKed packets
+ * Handle timeout events
+ * Retransmits the oldest unacked packet
  */
-void init_timer(int delay, void (*sig_handler)(int)) 
-{
-    //set up the signal handler for SIGALRM using signal.
+void resend_packets(int sig) {
+    if (sig == SIGALRM) {
+        VLOG(INFO, "Timeout occurred for packet %d", send_base);
+        int slot = get_window_slot(send_base);
+        
+        if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked) {
+            // Retransmit packet
+            if (sendto(sockfd, sender_window[slot].packet, 
+                      TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+                      (const struct sockaddr *)&serveraddr, serverlen) < 0) {
+                error("sendto failed");
+            }
+            gettimeofday(&sender_window[slot].sent_time, NULL);
+            reset_timer();
+            VLOG(DEBUG, "Resent packet %d", send_base);
+        }
+    }
+}
+
+/*
+ * Initialize timer for packet timeout detection
+ * Parameters:
+ * delay: Timeout duration in milliseconds
+ * sig_handler: Function to call on timeout
+ */
+void init_timer(int delay, void (*sig_handler)(int)) {
     signal(SIGALRM, sig_handler);
     
-    //configure the timer values based on the specified delay in milliseconds,
-    //setting both the initial and interval values. This sets the timer to trigger
-    //the SIGALRM signal after the specified delay and then repeatedly at the
-    //specified interval.
-    timer.it_interval.tv_sec = delay / 1000;    // sets an interval of the timer
-    timer.it_interval.tv_usec = (delay % 1000) * 1000;  
-    timer.it_value.tv_sec = delay / 1000;       // sets an initial value
+    // Set up timer intervals
+    timer.it_interval.tv_sec = delay / 1000;
+    timer.it_interval.tv_usec = (delay % 1000) * 1000;
+    timer.it_value.tv_sec = delay / 1000;
     timer.it_value.tv_usec = (delay % 1000) * 1000;
 
+    // Initialize signal mask
     sigemptyset(&sigmask);
     sigaddset(&sigmask, SIGALRM);
 }
@@ -182,125 +354,154 @@ int main (int argc, char **argv)
     next_seqno = 0;
     
     //infinite loop continues till end of file is reached
-    while (1)
-    {
-        //data is read from the file fp into the buffer with a maximum length of DATA_SIZE
-        len = fread(buffer, 1, DATA_SIZE, fp);
-        
-        //if no data read, would indicate end of file
-        if ( len <= 0)
-        {
-            //print a log message
-            VLOG(INFO, "End Of File has been reached");
+    while (1) {
+        // Try to fill the window
+        while (!window_is_full()) {
+            len = fread(buffer, 1, DATA_SIZE, fp);
             
-            //a special packet with data size 0 is created & sent to server to signal
-            //the end of the transmission
-            sndpkt = make_packet(0);
-            sendto(sockfd, sndpkt, TCP_HDR_SIZE,  0,
-                    (const struct sockaddr *)&serveraddr, serverlen);
-            break;
-        }
-
-
-        //MAIN DATA TRANSMISSION SECTION OF LOOP
-
-        //send_base and next_seqno keep track of the sender's window,
-        //and window_size is initially set to 1.
-
-        //send_base is set to the current next_seqno
-        send_base = next_seqno;
-
-        //next_seqno is updated by adding the length of the data just read.
-        next_seqno = send_base + len;
-
-        //A packet is created using make_packet with the length of data read.
-        sndpkt = make_packet(len);
-
-        //The data is copied from the buffer into the packet
-        memcpy(sndpkt->data, buffer, len);
-
-        //The sequence number is set
-        sndpkt->hdr.seqno = send_base;
-
-        
-        /*
-        This section of code is responsible for reliably sending data packets and
-        waiting for corresponding ACKs from the server. It uses a timeout mechanism
-        to ensure reliable data transmission. If the expected ACK is not received
-        within the specified timeout (RETRY), the sender will resend the packet
-        and continue waiting for the ACK until it is received.
-        This ensures the reliability of the Stop-and-Wait protocol.
-        */
-        do {
-
-            VLOG(DEBUG, "Sending packet %d to %s", 
-                    send_base, inet_ntoa(serveraddr.sin_addr));
-            
-            /* packet is sent to server using sendto()
-             * If the sendto is called for the first time, the system will
-             * will assign a random port number so that server can send its
-             * response to the src port.
-             */
-            if(sendto(sockfd, sndpkt, TCP_HDR_SIZE + get_data_size(sndpkt), 0, 
-                        ( const struct sockaddr *)&serveraddr, serverlen) < 0)
-            {
-                error("sendto");
+            // Check for EOF or read error
+            if (len <= 0) {
+                if (feof(fp)) {
+                    VLOG(INFO, "Reached end of file");
+                    
+                    // Wait for all packets to be acknowledged
+                    if (send_base == next_seqno) {
+                        // All packets acknowledged, send EOF
+                        stop_timer();
+                        
+                        VLOG(INFO, "All packets acknowledged, sending EOF");
+                        tcp_packet *eof_pkt = make_packet(0);
+                        sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
+                              (const struct sockaddr *)&serveraddr, serverlen);
+                        
+                        // Wait for EOF acknowledgment
+                        while(1) {
+                            if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
+                                      (struct sockaddr *)&serveraddr, &serverlen) < 0) {
+                                error("recvfrom failed");
+                            }
+                            tcp_packet *ack_pkt = (tcp_packet *)buffer;
+                            if(ack_pkt->hdr.ctr_flags == ACK) {
+                                VLOG(INFO, "Received EOF acknowledgment");
+                                free(eof_pkt);
+                                fclose(fp);
+                                return 0;
+                            }
+                        }
+                    }
+                } else {
+                    error("Error reading from file");
+                }
+                break;
             }
 
-            //timer is started to monitor whether an ACK is received within a 
-            //specific time frame (the retry duration)
-            start_timer();
-           
-            //enter a loop to wait for an ACK
-            do
-            {
-                //data was sent using sendto earlier. 
-                //now waits for a response using recevfrom.
-                //this is a blocking call that waits for data to arrive on the socket
-                //the received data is stored in buffer 
-                if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
-                            (struct sockaddr *) &serveraddr, (socklen_t *)&serverlen) < 0)
-                {
-                    error("recvfrom");
-                }
-
-                //the received data is cast to a tcp_packet struct
-                recvpkt = (tcp_packet *)buffer;
-                printf("%d \n", get_data_size(recvpkt));
-                
-                //check if the size of the received data is within expected limits
-                assert(get_data_size(recvpkt) <= DATA_SIZE);
-            }while(recvpkt->hdr.ackno < next_seqno);    //ignore duplicate ACKs
-            /*
-            The loop continues to execute until the received ACK's acknowledgment
-            number (recvpkt->hdr.ackno) is greater than or equal to the expected
-            acknowledgment number (next_seqno). This is important because the
-            sender may receive duplicate ACKs, and we want to ignore those duplicates.
-            */
-
-            //When the expected ACK is received or the loop exits, the sender stops
-            //the timer using stop_timer().
-            stop_timer();
+            // Create and store packet
+            int slot = get_window_slot(next_seqno);
             
-            /*resend pack if don't recv ACK */
-        } while(recvpkt->hdr.ackno != next_seqno);      
-        /*
-        The outer loop continues to resend the packet and wait for an acknowledgment
-        as long as the received ACK number (recvpkt->hdr.ackno) is not equal to
-        the expected ACK number (next_seqno). This ensures that the sender retransmits
-        the packet in case an ACK is not received or if there is a timeout.
-        */
+            // Clean up old packet if it exists
+            if (sender_window[slot].packet != NULL) {
+                free(sender_window[slot].packet);
+            }
+            
+            // Create new packet
+            sender_window[slot].packet = make_packet(len);
+            if (sender_window[slot].packet == NULL) {
+                error("Failed to create packet");
+            }
+            
+            // Copy data and set header fields
+            memcpy(sender_window[slot].packet->data, buffer, len);
+            sender_window[slot].packet->hdr.seqno = next_seqno;
+            
+            // Send packet
+            if(sendto(sockfd, sender_window[slot].packet,
+                     TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+                     (const struct sockaddr *)&serveraddr, serverlen) < 0) {
+                error("sendto failed");
+            }
+            
+            sender_window[slot].is_sent = true;
+            gettimeofday(&sender_window[slot].sent_time, NULL);
+            
+            // Start timer if this is the first unacked packet
+            if (next_seqno == send_base) {
+                start_timer();
+            }
+            
+            VLOG(DEBUG, "Sent packet %d to %s", 
+                 sender_window[slot].packet->hdr.seqno, 
+                 inet_ntoa(serveraddr.sin_addr));
+            
+            // Update sequence number
+            next_seqno += len;
+            
+            VLOG(DEBUG, "Window: base=%d next=%d size=%d", 
+                 send_base, next_seqno, next_seqno - send_base);
+        }
 
-        /*
-        deallocate memory that was previously allocated for the sndpkt structure
-        It's a good practice to free dynamically allocated memory when it's no longer
-        needed to avoid memory leaks and conserve system resources.
-        */
-        free(sndpkt);
+        // Check for ACKs while window is full
+        fd_set readfds;
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 1000; // 1ms timeout
+
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds);
+
+        if(select(sockfd + 1, &readfds, NULL, NULL, &timeout) > 0) {
+            // Received something
+            if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
+                       (struct sockaddr *)&serveraddr, &serverlen) < 0) {
+                error("recvfrom failed");
+            }
+
+            tcp_packet *ack_pkt = (tcp_packet *)buffer;
+            
+            // Process ACK
+            if(ack_pkt->hdr.ackno > send_base) {
+                // Calculate how many packets were ACKed
+                int num_acked = ack_pkt->hdr.ackno - send_base;
+                
+                VLOG(DEBUG, "Received ACK %d, advancing window by %d",
+                     ack_pkt->hdr.ackno, num_acked);
+                
+                // Free ACKed packets and slide window
+                for(int i = 0; i < num_acked; i++) {
+                    int slot = get_window_slot(send_base + i);
+                    if(sender_window[slot].packet != NULL) {
+                        free(sender_window[slot].packet);
+                        sender_window[slot].packet = NULL;
+                        sender_window[slot].is_acked = true;
+                        sender_window[slot].is_sent = false;
+                    }
+                }
+                
+                // Update send_base
+                send_base = ack_pkt->hdr.ackno;
+                
+                // Reset timer if there are still unacked packets
+                if(send_base < next_seqno) {
+                    reset_timer();
+                } else {
+                    stop_timer();
+                }
+                
+                VLOG(DEBUG, "New window: base=%d next=%d size=%d",
+                     send_base, next_seqno, next_seqno - send_base);
+            }
+        }
     }
 
-    return 0;
+    // Clean up any remaining packets in the window
+    for(int i = 0; i < WINDOW_SIZE; i++) {
+        if(sender_window[i].packet != NULL) {
+            free(sender_window[i].packet);
+            sender_window[i].packet = NULL;
+        }
+    }
 
+    fclose(fp);
+    return 0;
 }
 
 
