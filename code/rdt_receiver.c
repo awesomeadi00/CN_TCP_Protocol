@@ -8,6 +8,9 @@ Key features:
 - Writes received data to file in correct order
 */
 
+// Online animation for visualizing the entire process
+// https://www2.tkn.tu-berlin.de/teaching/rn/animations/gbn_sr/
+
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -23,8 +26,8 @@ Key features:
 #include "common.h"
 #include "packet.h"
 
-// Define window size for sliding window protocol
-#define WINDOW_SIZE 10
+#define WINDOW_SIZE 10              // Fixed window size
+#define PORT 8000                   // Default port number
 
 /*
  * Structure to represent a slot in the receiver's buffer
@@ -137,7 +140,6 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
  */
 int main(int argc, char **argv) {
     int sockfd;                    // UDP socket descriptor
-    int portno;                    // Port number to listen on
     int clientlen;                 // Size of client's address
     struct sockaddr_in serveraddr; // Server's address structure
     struct sockaddr_in clientaddr; // Client's address structure
@@ -147,16 +149,15 @@ int main(int argc, char **argv) {
     struct timeval tp;             // Timestamp structure
 
     // Verify correct command line arguments
-    if (argc != 3) {
-        fprintf(stderr, "usage: %s <port> FILE_RECVD\n", argv[0]);
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s <FILE_RECVD>\n", argv[0]);
         exit(1);
     }
-    portno = atoi(argv[1]);
 
     // Open output file for writing received data
-    fp = fopen(argv[2], "w");
+    fp = fopen(argv[1], "w");
     if (fp == NULL) {
-        error(argv[2]);
+        error(argv[1]);
     }
 
     // Create UDP socket
@@ -174,7 +175,7 @@ int main(int argc, char **argv) {
     bzero((char *) &serveraddr, sizeof(serveraddr));
     serveraddr.sin_family = AF_INET;           // Internet address family
     serveraddr.sin_addr.s_addr = htonl(INADDR_ANY); // Accept on any interface
-    serveraddr.sin_port = htons((unsigned short)portno); // Set port number
+    serveraddr.sin_port = htons((unsigned short)PORT); // Set port number
 
     // Bind socket to server address
     if (bind(sockfd, (struct sockaddr *) &serveraddr, sizeof(serveraddr)) < 0) 
@@ -263,7 +264,3 @@ int main(int argc, char **argv) {
 
     return 0;
 }
-
-//check some online animation tools to visualize a similar process:
-//https://www2.tkn.tu-berlin.de/teaching/rn/animations/gbn_sr/
-
