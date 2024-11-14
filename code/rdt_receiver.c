@@ -140,7 +140,7 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
  */
 int main(int argc, char **argv) {
     int sockfd;                    // UDP socket descriptor
-    int clientlen;                 // Size of client's address
+    socklen_t clientlen;                 // Size of client's address
     struct sockaddr_in serveraddr; // Server's address structure
     struct sockaddr_in clientaddr; // Client's address structure
     int optval;                    // Socket option value
