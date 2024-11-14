@@ -21,6 +21,7 @@ Key features:
 #include <sys/time.h>
 #include <time.h>
 #include <assert.h>
+#include <errno.h>
 
 #include "packet.h"
 #include "common.h"
@@ -403,7 +404,11 @@ int main(int argc, char **argv)
         bool can_send = !window_is_full();
 
         // Check for incoming ACKs
-        int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+        int activity;
+        do
+        {
+            activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+        } while (activity < 0 && errno == EINTR);
 
         if (activity < 0)
         {
