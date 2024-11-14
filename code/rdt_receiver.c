@@ -226,7 +226,7 @@ int main(int argc, char **argv) {
 
         // Log packet details
         gettimeofday(&tp, NULL);
-        VLOG(DEBUG, "%lu, %d, %d", tp.tv_sec, 
+        VLOG(DEBUG, "Received at (epoch): %lu | Data size: %d | Seqno: %d", tp.tv_sec, 
              received_pkt->hdr.data_size, received_pkt->hdr.seqno);
 
         // Process received packet based on its sequence number

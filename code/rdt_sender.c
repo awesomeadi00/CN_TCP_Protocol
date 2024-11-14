@@ -391,7 +391,6 @@ int main(int argc, char **argv)
     // infinite loop continues till end of file is reached
     while (1)
     {
-        // ACK Checking ------------------------------------------
         fd_set readfds;
         struct timeval timeout;
         timeout.tv_sec = 0;
@@ -399,9 +398,6 @@ int main(int argc, char **argv)
 
         FD_ZERO(&readfds);
         FD_SET(sockfd, &readfds); // Monitor socket for incoming ACKs
-
-        // If there's room in the window, allow sending packets
-        bool can_send = !window_is_full();
 
         // Check for incoming ACKs
         int activity;
@@ -461,13 +457,13 @@ int main(int argc, char **argv)
                 }
 
                 // Log new window state
-                VLOG(DEBUG, "New window: base=%d next=%d size=%d",
+                VLOG(DEBUG, "New Window Info: oldest_unack_seqno = %d | next seqno = %d | size=%d",
                      send_base, next_seqno, next_seqno - send_base);
             }
         }
 
         // If the window is not full, send more packets
-        if (can_send)
+        if (!window_is_full())
         {
             // Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
             // if it lem <= 0 then it means either it reached (EOF) or encounters an error.
@@ -560,10 +556,10 @@ int main(int argc, char **argv)
 
                 VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
 
-                // Update sequence number
+                // Update sequence number by len as packets are varied in size hence this will account for packet size transfer
                 next_seqno += len;
 
-                VLOG(DEBUG, "Window: base=%d next=%d size=%d", send_base, next_seqno, next_seqno - send_base);
+                VLOG(DEBUG, "Window Information: oldest_unack_seqno = %d | next seqno = %d | size = %d", send_base, next_seqno, next_seqno - send_base);
             }
         }
     }
