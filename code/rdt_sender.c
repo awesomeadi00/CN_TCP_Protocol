@@ -132,7 +132,7 @@ void init_sender_window()
  */
 int get_window_slot(int seqno)
 {
-    return seqno % WINDOW_SIZE;
+    return (seqno/DATA_SIZE) % WINDOW_SIZE;
 }
 
 /*
@@ -277,7 +277,7 @@ void send_packet(int slot)
         start_timer();
     }
 
-    VLOG(DEBUG, "Sent packet %d", next_seqno);
+    VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
 }
 
 /*
@@ -411,57 +411,6 @@ int main(int argc, char **argv)
             error("select failed");
         }
 
-        // Process ACKs if data is available on the socket
-        if (FD_ISSET(sockfd, &readfds))
-        {
-            // ACK received
-            if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
-            {
-                error("recvfrom failed");
-            }
-
-            tcp_packet *ack_pkt = (tcp_packet *)buffer;
-
-            if (ack_pkt->hdr.ackno > send_base)
-            {
-                int num_acked = ack_pkt->hdr.ackno - send_base;
-
-                // Log the ACK
-                VLOG(DEBUG, "Received ACK %d, advancing window by %d",
-                     ack_pkt->hdr.ackno, num_acked);
-
-                // Free ACKed packets and slide window
-                for (int i = 0; i < num_acked; i++)
-                {
-                    int slot = get_window_slot(send_base + i);
-                    if (sender_window[slot].packet != NULL)
-                    {
-                        free(sender_window[slot].packet);
-                        sender_window[slot].packet = NULL;
-                        sender_window[slot].is_acked = true;
-                        sender_window[slot].is_sent = false;
-                    }
-                }
-
-                // Update send_base (advance sliding window)
-                send_base = ack_pkt->hdr.ackno;
-
-                // Reset timer if there are still unacked packets
-                if (send_base < next_seqno)
-                {
-                    reset_timer();
-                }
-                else
-                {
-                    stop_timer();
-                }
-
-                // Log new window state
-                VLOG(DEBUG, "New Window Status: oldest unack_seqno = %d | next seqno = %d | size=%d",
-                     send_base, next_seqno, next_seqno - send_base);
-            }
-        }
-
         // If the window is not full, send more packets
         if (!window_is_full())
         {
@@ -519,6 +468,7 @@ int main(int argc, char **argv)
             {
                 // Get the slot number within the window for the packet
                 int slot = get_window_slot(next_seqno);
+                int no_of_slots_left = WINDOW_SIZE - slot;
 
                 // Clean up old packet if it exists
                 if (sender_window[slot].packet != NULL)
@@ -538,33 +488,68 @@ int main(int argc, char **argv)
                 sender_window[slot].packet->hdr.seqno = next_seqno;
 
                 // Send packet
-                if (sendto(sockfd, sender_window[slot].packet, TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0, (const struct sockaddr *)&serveraddr, serverlen) < 0)
-                {
-                    error("sendto failed");
-                }
-
-                sender_window[slot].is_sent = true;
-
-                // This timestamp is used for timeout handling to determine if the packet needs to be retransmitted.
-                gettimeofday(&sender_window[slot].sent_time, NULL);
-
-                // Start timer if this is the first unacked packet
-                if (next_seqno == send_base)
-                {
-                    start_timer();
-                }
-
-                VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
+                send_packet(slot);
 
                 // Update sequence number by len as packets are varied in size hence this will account for packet size transfer
                 next_seqno += len;
 
-                VLOG(DEBUG, "Window Status: oldest unacked_seqno = %d | next seqno = %d | size = %d", send_base, next_seqno, next_seqno - send_base);
+                VLOG(DEBUG, "Window Status: oldest unacked_seqno = %d | next seqno = %d | size = %d | number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
             }
         }
 
         else {
             VLOG(DEBUG, "Window Status: FULL");
+        }
+
+        // Process ACKs if data is available on the socket
+        if (FD_ISSET(sockfd, &readfds))
+        {
+            // ACK received
+            if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
+            {
+                error("recvfrom failed");
+            }
+
+            tcp_packet *ack_pkt = (tcp_packet *)buffer;
+
+            if (ack_pkt->hdr.ackno > send_base)
+            {
+                int num_acked = ack_pkt->hdr.ackno - send_base;
+
+                // Log the ACK
+                VLOG(DEBUG, "Received ACK %d, advancing window by %d",
+                     ack_pkt->hdr.ackno, num_acked);
+
+                // Free ACKed packets and slide window
+                for (int i = 0; i < num_acked; i++)
+                {
+                    int slot = get_window_slot(send_base + i);
+                    if (sender_window[slot].packet != NULL)
+                    {
+                        free(sender_window[slot].packet);
+                        sender_window[slot].packet = NULL;
+                        sender_window[slot].is_acked = true;
+                        sender_window[slot].is_sent = false;
+                    }
+                }
+
+                // Update send_base (advance sliding window)
+                send_base = ack_pkt->hdr.ackno;
+
+                // Reset timer if there are still unacked packets
+                if (send_base < next_seqno)
+                {
+                    reset_timer();
+                }
+                else
+                {
+                    stop_timer();
+                }
+
+                // Log new window state
+                VLOG(DEBUG, "New Window Status: oldest unack_seqno = %d | next seqno = %d | size = %d",
+                     send_base, next_seqno, next_seqno - send_base);
+            }
         }
     }
 
