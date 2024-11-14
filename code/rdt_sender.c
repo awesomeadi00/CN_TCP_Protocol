@@ -141,7 +141,10 @@ int get_window_slot(int seqno)
  */
 bool window_is_full()
 {
-    return next_seqno - send_base >= WINDOW_SIZE;
+    int packets_in_window = (next_seqno - send_base) / DATA_SIZE;
+    VLOG(DEBUG, "Window Volume Update: Oldest unACKed packet: %d | Next seqno: %d | Packets in Window: %d | Window Full Bool: %d",
+         send_base, next_seqno, packets_in_window, packets_in_window >= WINDOW_SIZE);
+    return packets_in_window >= WINDOW_SIZE;
 }
 
 /*
@@ -331,7 +334,6 @@ void init_timer(int delay, void (*sig_handler)(int))
 int main(int argc, char **argv)
 {
     int len;
-    int next_seqno;
     char buffer[DATA_SIZE];
     FILE *fp;
 
@@ -395,6 +397,7 @@ int main(int argc, char **argv)
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 1000; // 1ms timeout
+        int no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
         FD_ZERO(&readfds);
         FD_SET(sockfd, &readfds); // Monitor socket for incoming ACKs
@@ -426,8 +429,13 @@ int main(int argc, char **argv)
                 {
                     VLOG(INFO, "Reached end of file");
 
+                    // If by some accident the sender constantly sends packets and the receiver sends nothing (Sender doesn't advance maturely)
+                    if(send_base == 0 && next_seqno == 0) {
+                        perror("receiver didn't receive appropriately");
+                    }
+                    
                     // Ensure all packets to be acknowledged by receiver:
-                    if (send_base == next_seqno)
+                    else if (send_base == next_seqno)
                     {
                         // All packets acknowledged
                         stop_timer();
@@ -468,7 +476,6 @@ int main(int argc, char **argv)
             {
                 // Get the slot number within the window for the packet
                 int slot = get_window_slot(next_seqno);
-                int no_of_slots_left = WINDOW_SIZE - slot;
 
                 // Clean up old packet if it exists
                 if (sender_window[slot].packet != NULL)
@@ -493,7 +500,7 @@ int main(int argc, char **argv)
                 // Update sequence number by len as packets are varied in size hence this will account for packet size transfer
                 next_seqno += len;
 
-                VLOG(DEBUG, "Window Status: oldest unacked_seqno = %d | next seqno = %d | size = %d | number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
+                VLOG(DEBUG, "Window Status After Packet-Send: Oldest unACKAed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
             }
         }
 
@@ -547,8 +554,8 @@ int main(int argc, char **argv)
                 }
 
                 // Log new window state
-                VLOG(DEBUG, "New Window Status: oldest unack_seqno = %d | next seqno = %d | size = %d",
-                     send_base, next_seqno, next_seqno - send_base);
+                VLOG(DEBUG, "Window Status After ACK: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
+                     send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
             }
         }
     }
