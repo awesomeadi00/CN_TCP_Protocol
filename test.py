@@ -4,5 +4,5 @@ with open(
     "/Users/awesomeadi00/Desktop/Computer Networks/Projects/Project 2 - TCP/CN_P2A_TCP/input.txt",
     "w",
 ) as file:
-    for i in range(1, 1000001):
+    for i in range(1, 10000):
         file.write(str(i) + '\n')

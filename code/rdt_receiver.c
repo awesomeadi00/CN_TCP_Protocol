@@ -186,7 +186,7 @@ int main(int argc, char **argv) {
     clientlen = sizeof(struct sockaddr_in);
     
     // Start logging
-    VLOG(DEBUG, "epoch time, bytes received, sequence number");
+    VLOG(DEBUG, "Waiting for Packets...");
 
     // Main packet processing loop
     while (1) {

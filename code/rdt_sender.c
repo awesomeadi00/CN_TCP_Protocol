@@ -457,7 +457,7 @@ int main(int argc, char **argv)
                 }
 
                 // Log new window state
-                VLOG(DEBUG, "New Window Info: oldest_unack_seqno = %d | next seqno = %d | size=%d",
+                VLOG(DEBUG, "New Window Status: oldest unack_seqno = %d | next seqno = %d | size=%d",
                      send_base, next_seqno, next_seqno - send_base);
             }
         }
@@ -559,8 +559,12 @@ int main(int argc, char **argv)
                 // Update sequence number by len as packets are varied in size hence this will account for packet size transfer
                 next_seqno += len;
 
-                VLOG(DEBUG, "Window Information: oldest_unack_seqno = %d | next seqno = %d | size = %d", send_base, next_seqno, next_seqno - send_base);
+                VLOG(DEBUG, "Window Status: oldest unacked_seqno = %d | next seqno = %d | size = %d", send_base, next_seqno, next_seqno - send_base);
             }
+        }
+
+        else {
+            VLOG(DEBUG, "Window Status: FULL");
         }
     }
 
