@@ -13,7 +13,7 @@ Key features:
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <sys/types.h> 
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -22,13 +22,15 @@ Key features:
 #include <time.h>
 #include <assert.h>
 
-#include"packet.h"
-#include"common.h"
+#include "packet.h"
+#include "common.h"
 
 // Constants
-#define STDIN_FD    0              // Standard input file descriptor
-#define RETRY  120                 // Timeout duration in milliseconds
-#define WINDOW_SIZE 10             // Size of sliding window
+#define STDIN_FD 0              // Standard input file descriptor
+#define RETRY 120               // Timeout duration in milliseconds
+#define WINDOW_SIZE 10          // Size of sliding window
+#define HOSTNAME "127.0.0.1"    // Default hostname (localhost)
+#define PORT 8000               // Default port number
 
 /*
  * Structure to track each packet in the sending window
@@ -37,11 +39,12 @@ Key features:
  * - Flags for tracking packet state
  * - Timestamp of when packet was sent
  */
-typedef struct {
-    tcp_packet *packet;            // Pointer to actual packet data
-    bool is_sent;                  // Flag indicating if packet has been sent
-    bool is_acked;                // Flag indicating if packet has been acknowledged
-    struct timeval sent_time;      // Time when packet was last sent
+typedef struct
+{
+    tcp_packet *packet;       // Pointer to actual packet data
+    bool is_sent;             // Flag indicating if packet has been sent
+    bool is_acked;            // Flag indicating if packet has been acknowledged
+    struct timeval sent_time; // Time when packet was last sent
 } window_slot;
 
 /*
@@ -50,28 +53,31 @@ typedef struct {
  * - Various sequence numbers for window management
  * - Duplicate ACK handling
  */
-struct {
-    int LastPacketAcked;          // Sequence number of last acknowledged packet
-    int LastPacketSent;           // Sequence number of last sent packet
-    int LastPacketAvailable;      // Highest sequence number available to send
-    int duplicate_ack_count;      // Count of duplicate ACKs received
-    int last_ack_received;        // Most recent ACK number received
+struct
+{
+    int LastPacketAcked;     // Sequence number of last acknowledged packet
+    int LastPacketSent;      // Sequence number of last sent packet
+    int LastPacketAvailable; // Highest sequence number available to send
+    int duplicate_ack_count; // Count of duplicate ACKs received
+    int last_ack_received;   // Most recent ACK number received
 } window_state;
 
 /*
  * Structure to track duplicate acknowledgments
  * Used for implementing fast retransmit
  */
-struct {
-    int ack_number;               // ACK number being tracked
-    int count;                    // Number of times this ACK has been received
+struct
+{
+    int ack_number; // ACK number being tracked
+    int count;      // Number of times this ACK has been received
 } dup_ack_tracker;
 
 /*
  * Initialize the window state variables
  * Sets all counters and sequence numbers to initial values
  */
-void init_window_state() {
+void init_window_state()
+{
     window_state.LastPacketAcked = 0;
     window_state.LastPacketSent = 0;
     window_state.LastPacketAvailable = 0;
@@ -87,29 +93,32 @@ void init_window_state() {
  * 2. LastPacketSent <= LastPacketAvailable
  * 3. Window size limit not exceeded
  */
-bool window_constraints_valid() {
+bool window_constraints_valid()
+{
     return (window_state.LastPacketAcked <= window_state.LastPacketSent &&
             window_state.LastPacketSent <= window_state.LastPacketAvailable &&
             window_state.LastPacketSent - window_state.LastPacketAcked <= WINDOW_SIZE);
 }
 
 // Global variables
-window_slot sender_window[WINDOW_SIZE];  // Array of window slots
-int send_base = 0;                       // First unacked packet sequence number
-int next_seqno = 0;                      // Next sequence number to use
-int sockfd;                              // Socket file descriptor
-socklen_t serverlen;                     // Length of server address
-struct sockaddr_in serveraddr;           // Server address structure
-struct itimerval timer;                  // Timer for packet retransmission
-sigset_t sigmask;                        // Signal mask for timer management
-bool timer_running = false;              // Flag to track timer state
+window_slot sender_window[WINDOW_SIZE]; // Array of window slots
+int send_base = 0;                      // First unacked packet sequence number
+int next_seqno = 0;                     // Next sequence number to use
+int sockfd;                             // Socket file descriptor
+socklen_t serverlen;                    // Length of server address
+struct sockaddr_in serveraddr;          // Server address structure
+struct itimerval timer;                 // Timer for packet retransmission
+sigset_t sigmask;                       // Signal mask for timer management
+bool timer_running = false;             // Flag to track timer state
 
 /*
  * Initialize the sender's window buffer
  * Sets all slots to empty state
  */
-void init_sender_window() {
-    for(int i = 0; i < WINDOW_SIZE; i++) {
+void init_sender_window()
+{
+    for (int i = 0; i < WINDOW_SIZE; i++)
+    {
         sender_window[i].packet = NULL;
         sender_window[i].is_sent = false;
         sender_window[i].is_acked = false;
@@ -120,7 +129,8 @@ void init_sender_window() {
  * Calculate buffer slot for a sequence number
  * Implements circular buffer using modulo operation
  */
-int get_window_slot(int seqno) {
+int get_window_slot(int seqno)
+{
     return seqno % WINDOW_SIZE;
 }
 
@@ -128,7 +138,8 @@ int get_window_slot(int seqno) {
  * Check if sending window is full
  * Window is full if distance between next_seqno and send_base equals WINDOW_SIZE
  */
-bool window_is_full() {
+bool window_is_full()
+{
     return next_seqno - send_base >= WINDOW_SIZE;
 }
 
@@ -136,8 +147,10 @@ bool window_is_full() {
  * Timer management functions
  */
 // Start timer if not already running
-void start_timer() {
-    if (!timer_running) {
+void start_timer()
+{
+    if (!timer_running)
+    {
         sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
         setitimer(ITIMER_REAL, &timer, NULL);
         timer_running = true;
@@ -146,8 +159,10 @@ void start_timer() {
 }
 
 // Stop timer if running
-void stop_timer() {
-    if (timer_running) {
+void stop_timer()
+{
+    if (timer_running)
+    {
         sigprocmask(SIG_BLOCK, &sigmask, NULL);
         timer_running = false;
         VLOG(DEBUG, "Timer stopped");
@@ -155,7 +170,8 @@ void stop_timer() {
 }
 
 // Reset timer by stopping and starting it
-void reset_timer() {
+void reset_timer()
+{
     stop_timer();
     start_timer();
     VLOG(DEBUG, "Timer reset for packet %d", send_base);
@@ -169,54 +185,66 @@ void reset_timer() {
  * - Window advancement
  * - Buffer management
  */
-void process_ack(tcp_packet *ack_pkt) {
+void process_ack(tcp_packet *ack_pkt)
+{
     int ack_no = ack_pkt->hdr.ackno;
-    
+
     // Check for duplicate ACKs
-    if (ack_no == dup_ack_tracker.ack_number) {
+    if (ack_no == dup_ack_tracker.ack_number)
+    {
         dup_ack_tracker.count++;
-        
+
         // Implement fast retransmit after 3 duplicate ACKs
-        if (dup_ack_tracker.count == 3) {
+        if (dup_ack_tracker.count == 3)
+        {
             VLOG(INFO, "Three duplicate ACKs received for %d, retransmitting", ack_no);
             int slot = get_window_slot(ack_no);
-            if (sender_window[slot].packet != NULL) {
+            if (sender_window[slot].packet != NULL)
+            {
                 // Retransmit the packet
                 sendto(sockfd, sender_window[slot].packet,
-                      TCP_HDR_SIZE + get_data_size(sender_window[slot].packet),
-                      0, (const struct sockaddr *)&serveraddr, serverlen);
+                       TCP_HDR_SIZE + get_data_size(sender_window[slot].packet),
+                       0, (const struct sockaddr *)&serveraddr, serverlen);
                 reset_timer();
             }
             dup_ack_tracker.count = 0;
         }
-    } else {
+    }
+    else
+    {
         // New ACK received, reset duplicate counter
         dup_ack_tracker.ack_number = ack_no;
         dup_ack_tracker.count = 1;
     }
 
     // Process ACK if it advances the window
-    if (ack_no > window_state.LastPacketAcked) {
+    if (ack_no > window_state.LastPacketAcked)
+    {
         int num_acked = ack_no - window_state.LastPacketAcked;
-        
+
         // Free ACKed packets
-        for (int i = 0; i < num_acked; i++) {
+        for (int i = 0; i < num_acked; i++)
+        {
             int slot = get_window_slot(window_state.LastPacketAcked + i);
-            if (sender_window[slot].packet != NULL) {
+            if (sender_window[slot].packet != NULL)
+            {
                 free(sender_window[slot].packet);
                 sender_window[slot].packet = NULL;
                 sender_window[slot].is_acked = true;
                 sender_window[slot].is_sent = false;
             }
         }
-        
+
         // Update window state
         window_state.LastPacketAcked = ack_no;
-        
+
         // Manage timer based on remaining unacked packets
-        if (window_state.LastPacketAcked < window_state.LastPacketSent) {
+        if (window_state.LastPacketAcked < window_state.LastPacketSent)
+        {
             reset_timer();
-        } else {
+        }
+        else
+        {
             stop_timer();
         }
     }
@@ -229,22 +257,25 @@ void process_ack(tcp_packet *ack_pkt) {
  * - Timer management
  * - State updates
  */
-void send_packet(int slot) {
+void send_packet(int slot)
+{
     if (sendto(sockfd, sender_window[slot].packet,
                TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-               (const struct sockaddr *)&serveraddr, serverlen) < 0) {
+               (const struct sockaddr *)&serveraddr, serverlen) < 0)
+    {
         error("sendto failed");
     }
-    
+
     // Update packet state
     sender_window[slot].is_sent = true;
     gettimeofday(&sender_window[slot].sent_time, NULL);
-    
+
     // Start timer for first unacked packet
-    if (next_seqno == send_base) {
+    if (next_seqno == send_base)
+    {
         start_timer();
     }
-    
+
     VLOG(DEBUG, "Sent packet %d", next_seqno);
 }
 
@@ -252,16 +283,20 @@ void send_packet(int slot) {
  * Handle timeout events
  * Retransmits the oldest unacked packet
  */
-void resend_packets(int sig) {
-    if (sig == SIGALRM) {
+void resend_packets(int sig)
+{
+    if (sig == SIGALRM)
+    {
         VLOG(INFO, "Timeout occurred for packet %d", send_base);
         int slot = get_window_slot(send_base);
-        
-        if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked) {
+
+        if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
+        {
             // Retransmit packet
-            if (sendto(sockfd, sender_window[slot].packet, 
-                      TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-                      (const struct sockaddr *)&serveraddr, serverlen) < 0) {
+            if (sendto(sockfd, sender_window[slot].packet,
+                       TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+                       (const struct sockaddr *)&serveraddr, serverlen) < 0)
+            {
                 error("sendto failed");
             }
             gettimeofday(&sender_window[slot].sent_time, NULL);
@@ -277,9 +312,10 @@ void resend_packets(int sig) {
  * delay: Timeout duration in milliseconds
  * sig_handler: Function to call on timeout
  */
-void init_timer(int delay, void (*sig_handler)(int)) {
+void init_timer(int delay, void (*sig_handler)(int))
+{
     signal(SIGALRM, sig_handler);
-    
+
     // Set up timer intervals
     timer.it_interval.tv_sec = delay / 1000;
     timer.it_interval.tv_usec = (delay % 1000) * 1000;
@@ -291,51 +327,51 @@ void init_timer(int delay, void (*sig_handler)(int)) {
     sigaddset(&sigmask, SIGALRM);
 }
 
-
-int main (int argc, char **argv)
+int main(int argc, char **argv)
 {
-    int portno, len;
+    int len;
     int next_seqno;
-    char *hostname;
     char buffer[DATA_SIZE];
     FILE *fp;
 
     /*
-    check 3 command-line arguments: 
-    the hostname of the server, the portno to connect to, and the name
+    Checks 2 command-line arguments:
+    the execution command and the name
     of a file to be read as the data source for transmission.
      */
-    if (argc != 4) {
-        fprintf(stderr,"usage: %s <hostname> <port> <FILE>\n", argv[0]);
+    // Validate the input file argument
+    if (argc != 2)
+    {
+        fprintf(stderr, "usage: %s <FILE>\n", argv[0]);
         exit(0);
     }
-    hostname = argv[1];
-    portno = atoi(argv[2]);
-    fp = fopen(argv[3], "r");
-    if (fp == NULL) {
-        error(argv[3]);
-    }
 
+    // Open the input file
+    fp = fopen(argv[1], "r");
+    if (fp == NULL)
+    {
+        error(argv[1]);
+    }
 
     /* socket: create the socket */
     sockfd = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd < 0) 
+    if (sockfd < 0)
         error("ERROR opening socket");
 
-
     /* initialize server server details */
-    bzero((char *) &serveraddr, sizeof(serveraddr));
+    bzero((char *)&serveraddr, sizeof(serveraddr));
     serverlen = sizeof(serveraddr);
 
     /* covert host into network byte order */
-    if (inet_aton(hostname, &serveraddr.sin_addr) == 0) {
-        fprintf(stderr,"ERROR, invalid host %s\n", hostname);
+    if (inet_aton(HOSTNAME, &serveraddr.sin_addr) == 0)
+    {
+        fprintf(stderr, "ERROR, invalid host %s\n", HOSTNAME);
         exit(0);
     }
 
     /* build the server's Internet address */
     serveraddr.sin_family = AF_INET;
-    serveraddr.sin_port = htons(portno);
+    serveraddr.sin_port = htons(PORT);
 
     /*
     An assertion is made to check that the MSS (Maximum Segment Size) minus the
@@ -344,44 +380,123 @@ int main (int argc, char **argv)
     */
     assert(MSS_SIZE - TCP_HDR_SIZE > 0);
 
-    
-    //Stop and wait protocol
+    // Stop and wait protocol
 
-
-    //initialize the timer with the specified retry duration and
-    //the resend_packets function as the signal handler.
+    // initialize the timer with the specified retry duration and
+    // the resend_packets function as the signal handler.
     init_timer(RETRY, resend_packets);
     next_seqno = 0;
-    
-    //infinite loop continues till end of file is reached
-    while (1) {
-        // Try to fill the window
-        while (!window_is_full()) {
+
+    // infinite loop continues till end of file is reached
+    while (1)
+    {
+        // ACK Checking ------------------------------------------
+        fd_set readfds;
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 1000; // 1ms timeout
+
+        FD_ZERO(&readfds);
+        FD_SET(sockfd, &readfds); // Monitor socket for incoming ACKs
+
+        // If there's room in the window, allow sending packets
+        bool can_send = !window_is_full();
+
+        // Check for incoming ACKs
+        int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+
+        if (activity < 0)
+        {
+            error("select failed");
+        }
+
+        // Process ACKs if data is available on the socket
+        if (FD_ISSET(sockfd, &readfds))
+        {
+            // ACK received
+            if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
+            {
+                error("recvfrom failed");
+            }
+
+            tcp_packet *ack_pkt = (tcp_packet *)buffer;
+
+            if (ack_pkt->hdr.ackno > send_base)
+            {
+                int num_acked = ack_pkt->hdr.ackno - send_base;
+
+                // Log the ACK
+                VLOG(DEBUG, "Received ACK %d, advancing window by %d",
+                     ack_pkt->hdr.ackno, num_acked);
+
+                // Free ACKed packets and slide window
+                for (int i = 0; i < num_acked; i++)
+                {
+                    int slot = get_window_slot(send_base + i);
+                    if (sender_window[slot].packet != NULL)
+                    {
+                        free(sender_window[slot].packet);
+                        sender_window[slot].packet = NULL;
+                        sender_window[slot].is_acked = true;
+                        sender_window[slot].is_sent = false;
+                    }
+                }
+
+                // Update send_base (advance sliding window)
+                send_base = ack_pkt->hdr.ackno;
+
+                // Reset timer if there are still unacked packets
+                if (send_base < next_seqno)
+                {
+                    reset_timer();
+                }
+                else
+                {
+                    stop_timer();
+                }
+
+                // Log new window state
+                VLOG(DEBUG, "New window: base=%d next=%d size=%d",
+                     send_base, next_seqno, next_seqno - send_base);
+            }
+        }
+
+        // If the window is not full, send more packets
+        if (can_send)
+        {
+            // Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
+            // if it lem <= 0 then it means either it reached (EOF) or encounters an error.
             len = fread(buffer, 1, DATA_SIZE, fp);
-            
-            // Check for EOF or read error
-            if (len <= 0) {
-                if (feof(fp)) {
+
+            // Check for EOF (completed sending all the data successfully) or read errors
+            // If data transferred successfully then exit
+            if (len <= 0)
+            {
+                if (feof(fp))
+                {
                     VLOG(INFO, "Reached end of file");
-                    
-                    // Wait for all packets to be acknowledged
-                    if (send_base == next_seqno) {
-                        // All packets acknowledged, send EOF
+
+                    // Ensure all packets to be acknowledged by receiver:
+                    if (send_base == next_seqno)
+                    {
+                        // All packets acknowledged
                         stop_timer();
-                        
+
+                        // Informing receiver that transmission is complete
                         VLOG(INFO, "All packets acknowledged, sending EOF");
                         tcp_packet *eof_pkt = make_packet(0);
-                        sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
-                              (const struct sockaddr *)&serveraddr, serverlen);
-                        
-                        // Wait for EOF acknowledgment
-                        while(1) {
-                            if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
-                                      (struct sockaddr *)&serveraddr, &serverlen) < 0) {
+                        sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0, (const struct sockaddr *)&serveraddr, serverlen);
+
+                        // Wait for EOF acknowledgment from receiver
+                        while (1)
+                        {
+                            if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
+                            {
                                 error("recvfrom failed");
                             }
                             tcp_packet *ack_pkt = (tcp_packet *)buffer;
-                            if(ack_pkt->hdr.ctr_flags == ACK) {
+                            if (ack_pkt->hdr.ctr_flags == ACK)
+                            {
                                 VLOG(INFO, "Received EOF acknowledgment");
                                 free(eof_pkt);
                                 fclose(fp);
@@ -389,112 +504,70 @@ int main (int argc, char **argv)
                             }
                         }
                     }
-                } else {
+                }
+
+                // Else this is an error
+                else
+                {
                     error("Error reading from file");
                 }
-                break;
             }
 
-            // Create and store packet
-            int slot = get_window_slot(next_seqno);
-            
-            // Clean up old packet if it exists
-            if (sender_window[slot].packet != NULL) {
-                free(sender_window[slot].packet);
-            }
-            
-            // Create new packet
-            sender_window[slot].packet = make_packet(len);
-            if (sender_window[slot].packet == NULL) {
-                error("Failed to create packet");
-            }
-            
-            // Copy data and set header fields
-            memcpy(sender_window[slot].packet->data, buffer, len);
-            sender_window[slot].packet->hdr.seqno = next_seqno;
-            
-            // Send packet
-            if(sendto(sockfd, sender_window[slot].packet,
-                     TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-                     (const struct sockaddr *)&serveraddr, serverlen) < 0) {
-                error("sendto failed");
-            }
-            
-            sender_window[slot].is_sent = true;
-            gettimeofday(&sender_window[slot].sent_time, NULL);
-            
-            // Start timer if this is the first unacked packet
-            if (next_seqno == send_base) {
-                start_timer();
-            }
-            
-            VLOG(DEBUG, "Sent packet %d to %s", 
-                 sender_window[slot].packet->hdr.seqno, 
-                 inet_ntoa(serveraddr.sin_addr));
-            
-            // Update sequence number
-            next_seqno += len;
-            
-            VLOG(DEBUG, "Window: base=%d next=%d size=%d", 
-                 send_base, next_seqno, next_seqno - send_base);
-        }
+            // Otherwise, we will continue to prepare and send more packets within the window
+            else
+            {
+                // Get the slot number within the window for the packet
+                int slot = get_window_slot(next_seqno);
 
-        // Check for ACKs while window is full
-        fd_set readfds;
-        struct timeval timeout;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 1000; // 1ms timeout
-
-        FD_ZERO(&readfds);
-        FD_SET(sockfd, &readfds);
-
-        if(select(sockfd + 1, &readfds, NULL, NULL, &timeout) > 0) {
-            // Received something
-            if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
-                       (struct sockaddr *)&serveraddr, &serverlen) < 0) {
-                error("recvfrom failed");
-            }
-
-            tcp_packet *ack_pkt = (tcp_packet *)buffer;
-            
-            // Process ACK
-            if(ack_pkt->hdr.ackno > send_base) {
-                // Calculate how many packets were ACKed
-                int num_acked = ack_pkt->hdr.ackno - send_base;
-                
-                VLOG(DEBUG, "Received ACK %d, advancing window by %d",
-                     ack_pkt->hdr.ackno, num_acked);
-                
-                // Free ACKed packets and slide window
-                for(int i = 0; i < num_acked; i++) {
-                    int slot = get_window_slot(send_base + i);
-                    if(sender_window[slot].packet != NULL) {
-                        free(sender_window[slot].packet);
-                        sender_window[slot].packet = NULL;
-                        sender_window[slot].is_acked = true;
-                        sender_window[slot].is_sent = false;
-                    }
+                // Clean up old packet if it exists
+                if (sender_window[slot].packet != NULL)
+                {
+                    free(sender_window[slot].packet);
                 }
-                
-                // Update send_base
-                send_base = ack_pkt->hdr.ackno;
-                
-                // Reset timer if there are still unacked packets
-                if(send_base < next_seqno) {
-                    reset_timer();
-                } else {
-                    stop_timer();
+
+                // Create new packet based on the size of the data payload (len)
+                sender_window[slot].packet = make_packet(len);
+                if (sender_window[slot].packet == NULL)
+                {
+                    error("Failed to create packet");
                 }
-                
-                VLOG(DEBUG, "New window: base=%d next=%d size=%d",
-                     send_base, next_seqno, next_seqno - send_base);
+
+                // Copy data and set header fields (set seqno)
+                memcpy(sender_window[slot].packet->data, buffer, len);
+                sender_window[slot].packet->hdr.seqno = next_seqno;
+
+                // Send packet
+                if (sendto(sockfd, sender_window[slot].packet, TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0, (const struct sockaddr *)&serveraddr, serverlen) < 0)
+                {
+                    error("sendto failed");
+                }
+
+                sender_window[slot].is_sent = true;
+
+                // This timestamp is used for timeout handling to determine if the packet needs to be retransmitted.
+                gettimeofday(&sender_window[slot].sent_time, NULL);
+
+                // Start timer if this is the first unacked packet
+                if (next_seqno == send_base)
+                {
+                    start_timer();
+                }
+
+                VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
+
+                // Update sequence number
+                next_seqno += len;
+
+                VLOG(DEBUG, "Window: base=%d next=%d size=%d", send_base, next_seqno, next_seqno - send_base);
             }
         }
     }
 
     // Clean up any remaining packets in the window
-    for(int i = 0; i < WINDOW_SIZE; i++) {
-        if(sender_window[i].packet != NULL) {
+    for (int i = 0; i < WINDOW_SIZE; i++)
+    {
+        if (sender_window[i].packet != NULL)
+        {
             free(sender_window[i].packet);
             sender_window[i].packet = NULL;
         }
@@ -503,8 +576,3 @@ int main (int argc, char **argv)
     fclose(fp);
     return 0;
 }
-
-
-
-
-
