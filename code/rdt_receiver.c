@@ -36,7 +36,7 @@ Key features:
  */
 typedef struct {
 	tcp_packet *packet;  	// Pointer to store the actual packet
-	bool is_valid;   		// Flag to track if slot contains valid data
+	bool is_buffered;   		// Flag to track if slot contains valid data
 } receiver_buffer_slot;
 
 
@@ -52,7 +52,7 @@ int highest_seqno = 0; // Highest sequence number seen so far
 void init_receiver_buffer() {
 	for(int i = 0; i < WINDOW_SIZE; i++) {
     	receiver_buffer[i].packet = NULL;	// No packet
-    	receiver_buffer[i].is_valid = false; // Slot is empty
+		receiver_buffer[i].is_buffered = false; // Slot is empty
 	}
 }
 
@@ -65,36 +65,6 @@ int get_buffer_slot(int seqno) {
 	return (seqno/DATA_SIZE) % WINDOW_SIZE;
 }
 
-/*
- * Process packets that are ready to be delivered to the application
- * Writes consecutive packets to file starting from rcv_base
- * Stops when it encounters a gap in sequence numbers
- *
- * Parameters:
- * fp: File pointer where data should be written
- */
-void process_received_packets(FILE *fp) {
-	while(1) {
-    	int slot = get_buffer_slot(rcv_base);
-    	// Stop if we find a gap (missing packet)
-    	if(!receiver_buffer[slot].is_valid) {
-        	break;
-    	}
-   	 
-    	// Write this packet's data to file at the correct position
-    	fseek(fp, rcv_base, SEEK_SET);
-    	fwrite(receiver_buffer[slot].packet->data,
-           	1, receiver_buffer[slot].packet->hdr.data_size, fp);
-   	 
-    	// Update rcv_base to next expected sequence number
-    	rcv_base += receiver_buffer[slot].packet->hdr.data_size;
-   	 
-    	// Clean up the buffer slot
-    	free(receiver_buffer[slot].packet);
-    	receiver_buffer[slot].packet = NULL;
-    	receiver_buffer[slot].is_valid = false;
-	}
-}
 
 /*
  * Send an acknowledgment packet back to the sender
@@ -125,6 +95,40 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
     
 	// Clean up
 	free(ack_pkt);
+}
+
+/*
+ * Process packets that are ready to be delivered to the application
+ * Writes consecutive packets to file starting from rcv_base
+ * Stops when it encounters a gap in sequence numbers
+ */
+void process_buffered_packets(FILE *fp)
+{
+	while (1)
+	{
+		int slot = get_buffer_slot(rcv_base);
+
+		// Stop if we find a packet that is not buffered
+		if (!receiver_buffer[slot].is_buffered)
+		{
+			break;
+		}
+
+		// Write this packet's data to file at the correct position
+		fseek(fp, rcv_base, SEEK_SET);
+		fwrite(receiver_buffer[slot].packet->data,
+			   1, receiver_buffer[slot].packet->hdr.data_size, fp);
+
+		// Update rcv_base to next expected sequence number
+		rcv_base += receiver_buffer[slot].packet->hdr.data_size;
+
+		// Clean up the buffer slot
+		free(receiver_buffer[slot].packet);
+		receiver_buffer[slot].packet = NULL;
+		receiver_buffer[slot].is_buffered = false;
+	}
+
+	VLOG(DEBUG, "Processed buffered packets, updated receive_base to %d", rcv_base);
 }
 
 /*
@@ -209,9 +213,9 @@ int main(int argc, char **argv) {
         	VLOG(INFO, "End Of File has been reached");
        	 
         	// Process any remaining buffered packets
-        	process_received_packets(fp);
-       	 
-        	// Send final ACK
+			process_buffered_packets(fp);
+
+			// Send final ACK
 			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
 
 			VLOG(INFO, "Final ACK sent, now terminating");
@@ -249,26 +253,32 @@ int main(int argc, char **argv) {
 			rcv_base += received_pkt->hdr.data_size;
        	 
         	// Check if we can now process any buffered packets
-        	process_received_packets(fp);
-    	}
+			process_buffered_packets(fp);
+		}
 
 		// Out-of-order packet - store in buffer
 		else if(received_pkt->hdr.seqno > rcv_base) {
         	int slot = get_buffer_slot(received_pkt->hdr.seqno);
-       	 
-        	if(!receiver_buffer[slot].is_valid) {
-            	// Allocate space and store packet
+
+			// If the packet has not been buffered
+			if (!receiver_buffer[slot].is_buffered)
+			{
+				// Allocate space and store packet
             	receiver_buffer[slot].packet = malloc(TCP_HDR_SIZE + received_pkt->hdr.data_size);
             	memcpy(receiver_buffer[slot].packet, received_pkt, TCP_HDR_SIZE + received_pkt->hdr.data_size);
-            	receiver_buffer[slot].is_valid = true;
-           	 
-            	// Update highest sequence number seen
+				receiver_buffer[slot].is_buffered = true;
+
+				// Update highest sequence number seen
             	if(received_pkt->hdr.seqno > highest_seqno) {
                 	highest_seqno = received_pkt->hdr.seqno;
             	}
-        	}
+				VLOG(DEBUG, "Out of order packet received, buffered packet: %d", received_pkt->hdr.seqno);
+			}
 
-			VLOG(DEBUG, "Out of order packet received, buffered packet: %d", received_pkt->hdr.seqno);
+			// Otherwise it has been buffered, hence we will discard it. 
+			else {
+				VLOG(DEBUG, "Out-of-order packet %d already buffered - discarded", received_pkt->hdr.seqno);
+			}
 		}
 	}
 

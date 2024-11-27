@@ -263,7 +263,7 @@ void resend_packets(int sig)
 {
 	if (sig == SIGALRM)
 	{
-    	VLOG(INFO, "Timeout occurred for packet: %lu. Retransmitting...", send_base + DATA_SIZE);
+    	VLOG(INFO, "Timeout occurred for packet: %d. Retransmitting...", send_base);
 
     	for (int i = 0; i < WINDOW_SIZE; i++)
     	{
