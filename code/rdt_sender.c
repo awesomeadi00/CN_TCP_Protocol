@@ -40,26 +40,12 @@ Key features:
  */
 typedef struct
 {
-	tcp_packet *packet;   	// Pointer to actual packet data
-	bool is_sent;         	// Flag indicating if packet has been sent
-	bool is_acked;        	// Flag indicating if packet has been acknowledged
-	struct timeval sent_time; // Time when packet was last sent
+	tcp_packet *packet;   		// Pointer to actual packet data
+	bool is_sent;         		// Flag indicating if packet has been sent
+	bool is_acked;        		// Flag indicating if packet has been acknowledged
+	struct timeval sent_time; 	// Time when packet was last sent
 } window_slot;
 
-/*
- * Structure to maintain window state information
- * Tracks:
- * - Various sequence numbers for window management
- * - Duplicate ACK handling
- */
-struct
-{
-	int LastPacketAcked; 	// Sequence number of last acknowledged packet
-	int LastPacketSent;  	// Sequence number of last sent packet
-	int LastPacketAvailable; // Highest sequence number available to send
-	int duplicate_ack_count; // Count of duplicate ACKs received
-	int last_ack_received;   // Most recent ACK number received
-} window_state;
 
 /*
  * Structure to track duplicate acknowledgments
@@ -72,7 +58,6 @@ struct
 } dup_ack_tracker;
 
 // Function declarations
-void init_window_state();
 void init_sender_window();
 void start_timer();
 void stop_timer();
@@ -82,33 +67,6 @@ void process_ack(tcp_packet *ack_pkt);
 void resend_packets(int sig);
 void init_timer(int delay, void (*sig_handler)(int));
 
-/*
- * Initialize the window state variables
- * Sets all counters and sequence numbers to initial values
- */
-void init_window_state()
-{
-	window_state.LastPacketAcked = 0;
-	window_state.LastPacketSent = 0;
-	window_state.LastPacketAvailable = 0;
-	window_state.duplicate_ack_count = 0;
-	window_state.last_ack_received = -1;
-	dup_ack_tracker.ack_number = -1;
-	dup_ack_tracker.count = 0;
-}
-
-/*
- * Check if current window state meets all constraints:
- * 1. LastPacketAcked <= LastPacketSent
- * 2. LastPacketSent <= LastPacketAvailable
- * 3. Window size limit not exceeded
- */
-bool window_constraints_valid()
-{
-	return (window_state.LastPacketAcked <= window_state.LastPacketSent &&
-        	window_state.LastPacketSent <= window_state.LastPacketAvailable &&
-        	window_state.LastPacketSent - window_state.LastPacketAcked <= WINDOW_SIZE);
-}
 
 // Global variables
 window_slot sender_window[WINDOW_SIZE]; // Array of window slots
@@ -173,7 +131,6 @@ void start_timer()
     	sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
     	setitimer(ITIMER_REAL, &timer, NULL);
     	timer_running = true;
-    	VLOG(DEBUG, "Timer started for packet %d", send_base);
 	}
 }
 
@@ -184,7 +141,6 @@ void stop_timer()
 	{
     	sigprocmask(SIG_BLOCK, &sigmask, NULL);
     	timer_running = false;
-    	VLOG(DEBUG, "Timer stopped");
 	}
 }
 
@@ -193,55 +149,6 @@ void reset_timer()
 {
 	stop_timer();
 	start_timer();
-	VLOG(DEBUG, "Timer reset for packet %d", send_base);
-}
-
-/*
- * Process received acknowledgment
- * Handles:
- * - Duplicate ACK detection
- * - Fast retransmit after 3 duplicate ACKs
- * - Window advancement
- * - Buffer management
- */
-void process_ack(tcp_packet *ack_pkt)
-{
-	int ack_no = ack_pkt->hdr.ackno;
-
-	// Ignore ACKs for packets already acknowledged
-	if (ack_no <= send_base) {
-    	VLOG(DEBUG, "Received duplicate or outdated ACK %d", ack_no);
-    	return;
-	}
-
-	if (ack_no > next_seqno) {
-    	VLOG(DEBUG, "Received invalid ACK %d beyond next_seqno %d", ack_no, next_seqno);
-    	return;
-	}
-
-	// Update window state
-	window_state.LastPacketAcked = ack_no;
-	window_state.last_ack_received = ack_no;
-	window_state.duplicate_ack_count = 0;
-
-	// Free acknowledged packets
-	while (send_base < ack_no) {
-    	int slot = get_window_slot(send_base);
-    	if (sender_window[slot].packet != NULL) {
-        	free(sender_window[slot].packet);
-        	sender_window[slot].packet = NULL;
-        	sender_window[slot].is_acked = true;
-        	sender_window[slot].is_sent = false;
-    	}
-    	send_base += DATA_SIZE;
-	}
-
-	// Reset or stop timer
-	if (send_base < next_seqno) {
-    	reset_timer();
-	} else {
-    	stop_timer();
-	}
 }
 
 /*
@@ -254,10 +161,10 @@ void process_ack(tcp_packet *ack_pkt)
 void send_packet(int slot)
 {
 	if (sendto(sockfd, sender_window[slot].packet,
-           	TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-           	(const struct sockaddr *)&serveraddr, serverlen) < 0)
+			   TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+			   (const struct sockaddr *)&serveraddr, serverlen) < 0)
 	{
-    	error("sendto failed");
+		error("sendto failed");
 	}
 
 	// Update packet state
@@ -267,10 +174,85 @@ void send_packet(int slot)
 	// Start timer for first unacked packet
 	if (next_seqno == send_base)
 	{
-    	start_timer();
+		start_timer();
 	}
 
 	VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
+}
+
+/*
+ * Process received acknowledgment
+ * Handles:
+ * - Duplicate ACK detection
+ * - Fast retransmit after 3 duplicate ACKs
+ * - Window advancement
+ * - Buffer management
+ */
+void process_ack(tcp_packet *ack_pkt)
+{
+	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
+	VLOG(DEBUG, "Recieved ACK %d", ack_no);
+
+	// If we receive an ack which is below the base (Duplicate ACK)
+	if (ack_no < send_base)
+	{
+		VLOG(DEBUG, "Received duplicate ACK for %d", ack_no);
+
+		// Handle duplicate ACKs for fast retransmit only if 3 duplicates are detected
+		if (dup_ack_tracker.ack_number == ack_no)
+		{
+			dup_ack_tracker.count++;
+			if (dup_ack_tracker.count == 3)
+			{
+				// Fast retransmit for the packet causing duplicate ACKs
+				int slot = get_window_slot(ack_no);
+				if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
+				{
+					send_packet(slot);
+					VLOG(DEBUG, "Fast retransmitted packet %d", ack_no);
+				}
+				dup_ack_tracker.count = 0; // Reset duplicate ACK counter
+			}
+		}
+		else
+		{
+			dup_ack_tracker.ack_number = ack_no;
+			dup_ack_tracker.count = 1;
+		}
+		return; // No further processing needed for duplicate ACK
+	}
+
+	// Handle cumulative ACK
+	int num_acked = (ack_no - send_base) / DATA_SIZE;
+	for (int i = 0; i < num_acked; i++)
+	{
+		int slot = get_window_slot(send_base + i * DATA_SIZE);
+
+		// Free memory for acknowledged packets
+		if (sender_window[slot].packet != NULL)
+		{
+			free(sender_window[slot].packet);
+			sender_window[slot].packet = NULL;
+			sender_window[slot].is_acked = true;
+		}
+	}
+
+	// Advance send_base (sliding window)
+	send_base = ack_no;
+
+	// Log window advancement
+	VLOG(DEBUG, "Advanced send_base to %d", send_base);
+
+	// If all packets are acknowledged, stop the timer
+	if (send_base == next_seqno)
+	{
+		stop_timer();
+	}
+	else
+	{
+		// Reset the timer for remaining unacknowledged packets
+		reset_timer();
+	}
 }
 
 /*
@@ -379,72 +361,54 @@ int main(int argc, char **argv)
 	*/
 	assert(MSS_SIZE - TCP_HDR_SIZE > 0);
 
-	init_sender_window();  
-	init_window_state();   
+	init_sender_window();
 
-	// Stop and wait protocol
-
-	// initialize the timer with the specified retry duration and
-	// the resend_packets function as the signal handler.
+	// Stop and wait protocol ------------------------------------------------
+	// Initialize the timer with the specified retry duration and the resend_packets function as the signal handler.
 	init_timer(RETRY, resend_packets);
-	next_seqno = 0;
 
 	// infinite loop continues till end of file is reached
 	while (1)
 	{
     	if (!is_valid_window_state()) {
-        	VLOG(INFO, "Invalid window state detected: send_base=%d next_seqno=%d",
-             	send_base, next_seqno);
+        	VLOG(INFO, "Invalid window state detected: send_base = %d next_seqno = %d", send_base, next_seqno);
         	// Clean up and exit
         	fclose(fp);
         	return -1;  // Return with error
     	}
 
     	fd_set readfds;
-    	struct timeval timeout;
-    	timeout.tv_sec = 0;
-    	timeout.tv_usec = 1000; // 1ms timeout
-    	int no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
-    	bool full_alert = false;
+		struct timeval timeout;
+		timeout.tv_sec = 0;
+		timeout.tv_usec = 1000; // 1ms timeout
+		int no_of_slots_left;
 
-    	FD_ZERO(&readfds);
-    	FD_SET(sockfd, &readfds); // Monitor socket for incoming ACKs
+		// Monitor socket for incoming ACKs
+		FD_ZERO(&readfds);
+    	FD_SET(sockfd, &readfds); 
+		if(select(sockfd + 1, &readfds, NULL, NULL, &timeout) < 0) {
+			error("select failed");
+		}
 
-    	// Check for incoming ACKs
-    	int activity;
-    	do
-    	{
-        	activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
-    	} while (activity < 0 && errno == EINTR);
-
-    	if (activity < 0)
-    	{
-        	error("select failed");
-    	}
-
-    	// If the window is not full, send more packets
+		// If the window is not full, send more packets
     	if (!window_is_full())
     	{
-        	full_alert = false;
         	// Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
-        	// if it lem <= 0 then it means either it reached (EOF) or encounters an error.
         	len = fread(buffer, 1, DATA_SIZE, fp);
 
-        	// Check for EOF (completed sending all the data successfully) or read errors
-        	// If data transferred successfully then exit
+			// If it len <= 0 then it means either it reached (EOF) or encounters an error.
         	if (len <= 0) {
-            	if (feof(fp)) {
-                	VLOG(INFO, "Reached end of file");
-               	 
-                	// Wait for all packets to be acknowledged
-                	while (send_base < next_seqno) {
-                    	// Check for ACKs
+				// If  EOF (completed sending all the data successfully:
+				if (feof(fp)) {
+					VLOG(INFO, "End Of File has been reached");
+
+					// Wait for all packets to be acknowledged
+                	while (send_base < next_seqno - DATA_SIZE) {
                     	fd_set readfds;
-                    	struct timeval timeout;
-                    	timeout.tv_sec = 0;
-                    	timeout.tv_usec = 1000;
-                   	 
-                    	FD_ZERO(&readfds);
+						struct timeval timeout;
+						timeout.tv_sec = 0;
+						timeout.tv_usec = 1000; // 1ms timeout
+						FD_ZERO(&readfds);
                     	FD_SET(sockfd, &readfds);
                    	 
                     	if (select(sockfd + 1, &readfds, NULL, NULL, &timeout) > 0) {
@@ -458,19 +422,56 @@ int main(int argc, char **argv)
                         	}
                     	}
                 	}
-               	 
-                	// Send EOF packet only after all data is acknowledged
-                	VLOG(INFO, "All packets acknowledged, sending EOF");
-                	tcp_packet *eof_pkt = make_packet(0);
-                	for (int i = 0; i < 3; i++) {  // Send multiple times for reliability
-                    	sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
-                           	(const struct sockaddr *)&serveraddr, serverlen);
-                	}
-                	free(eof_pkt);
-                	fclose(fp);
-                	return 0;
-            	}
-            	error("Error reading from file");
+
+					// Send EOF packet only after all data is acknowledged
+					VLOG(INFO, "All packets acknowledged, starting EOF handshake");
+
+					tcp_packet *eof_pkt = make_packet(0); // Create EOF packet
+					eof_pkt->hdr.seqno = next_seqno;	  // Assign sequence number
+					eof_pkt->hdr.ctr_flags = 0x02;		  // Set FIN flag
+
+					while (1)
+					{
+						// Send EOF packet
+						sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
+							   (const struct sockaddr *)&serveraddr, serverlen);
+
+						VLOG(DEBUG, "EOF packet sent, waiting for acknowledgment");
+
+						// Wait for ACK with timeout
+						fd_set readfds;
+						struct timeval timeout;
+						timeout.tv_sec = 1; // 1-second timeout
+						timeout.tv_usec = 0;
+						FD_ZERO(&readfds);
+						FD_SET(sockfd, &readfds);
+
+						int rv = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+
+						if (rv > 0)
+						{
+							// Wait to receive final ACK
+							char buffer[MSS_SIZE];
+							recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
+							tcp_packet *ack_pkt = (tcp_packet *)buffer;
+
+							if (ack_pkt->hdr.ctr_flags == ACK && ack_pkt->hdr.ackno == next_seqno)
+							{
+								VLOG(INFO, "EOF acknowledgment received, terminating sender");
+								break;
+							}
+						}
+						else
+						{
+							VLOG(INFO, "EOF acknowledgment not received, retransmitting EOF");
+						}
+					}
+
+					free(eof_pkt); // Clean up EOF packet
+					fclose(fp);	   // Close file
+					return 0;
+				}
+				error("Error reading from file");
         	}
 
         	// Otherwise, we will continue to prepare and send more packets within the window
@@ -492,7 +493,7 @@ int main(int argc, char **argv)
                 	error("Failed to create packet");
             	}
 
-            	// Copy data and set header fields (set seqno)
+            	// Assign sequence number to the packet
             	memcpy(sender_window[slot].packet->data, buffer, len);
             	sender_window[slot].packet->hdr.seqno = next_seqno;
 
@@ -501,39 +502,33 @@ int main(int argc, char **argv)
 
             	// Update sequence number by len as packets are varied in size hence this will account for packet size transfer
             	next_seqno += len;
+				no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
-            	VLOG(DEBUG, "Window Status After Packet-Send: Oldest unACKAed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
+				VLOG(DEBUG, "Window Status: Oldest unACKAed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
         	}
     	}
 
     	else {
-        	if (!full_alert)
-        	{
-            	VLOG(DEBUG, "Window Status: FULL");
-            	full_alert = true;
-        	}
+			VLOG(DEBUG, "Window Status: FULL");
     	}
 
     	// Process ACKs if data is available on the socket
-    	if (FD_ISSET(sockfd, &readfds))
+    	if (FD_ISSET(sockfd, &readfds) || window_is_full())
     	{
-        	// ACK received
+        	// Receive an ACK from the reciever
         	if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
         	{
             	error("recvfrom failed");
         	}
 
         	tcp_packet *ack_pkt = (tcp_packet *)buffer;
+			process_ack(ack_pkt);
+			no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
-        	// Process ack if the ack number is above the oldest seqno packet (ignores packets which have been acked)
-        	if (ack_pkt->hdr.ackno > send_base)
-        	{
-            	process_ack(ack_pkt);
-
-            	// Log new window state
-            	VLOG(DEBUG, "Window Status After ACK: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
-                 	send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
-        	}
+			// Log new window state
+			VLOG(DEBUG, "Window Status: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
+				send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
+        	
     	}
 	}
 

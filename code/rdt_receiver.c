@@ -26,7 +26,7 @@ Key features:
 #include "common.h"
 #include "packet.h"
 
-#define WINDOW_SIZE 4          	// // Keep the window size <= max seq. no / 2
+#define WINDOW_SIZE 4          	// Keep the window size <= max seq. no / 2
 
 /*
  * Structure to represent a slot in the receiver's buffer
@@ -35,13 +35,12 @@ Key features:
  * - A flag indicating if the slot contains valid data
  */
 typedef struct {
-	tcp_packet *packet;  // Pointer to store the actual packet
-	bool is_valid;   	// Flag to track if slot contains valid data
+	tcp_packet *packet;  	// Pointer to store the actual packet
+	bool is_valid;   		// Flag to track if slot contains valid data
 } receiver_buffer_slot;
 
-/*
- * Global variables for receiver state management
- */
+
+// Global variables for receiver state management
 receiver_buffer_slot receiver_buffer[WINDOW_SIZE];  // Circular buffer for out-of-order packets
 int rcv_base = 0;  	// Base sequence number - next expected in-order packet
 int highest_seqno = 0; // Highest sequence number seen so far
@@ -63,7 +62,7 @@ void init_receiver_buffer() {
  * Returns: slot index in the buffer array
  */
 int get_buffer_slot(int seqno) {
-	return seqno % WINDOW_SIZE;
+	return (seqno/DATA_SIZE) % WINDOW_SIZE;
 }
 
 /*
@@ -138,15 +137,15 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
  * - ACK sending
  */
 int main(int argc, char **argv) {
-	int sockfd;                	// UDP socket descriptor
-	int portno;
+	int sockfd;                			// Socket	
+	int portno;							// Port to listen on
 	socklen_t clientlen;             	// Size of client's address
-	struct sockaddr_in serveraddr; // Server's address structure
-	struct sockaddr_in clientaddr; // Client's address structure
-	int optval;                	// Socket option value
-	FILE *fp;                  	// Output file pointer
-	char buffer[MSS_SIZE];     	// Buffer for receiving packets
-	struct timeval tp;         	// Timestamp structure
+	struct sockaddr_in serveraddr; 		// Server's address structure
+	struct sockaddr_in clientaddr; 		// Client's address structure
+	int optval;                			// Socket option value
+	FILE *fp;                  			// Output file pointer
+	char buffer[MSS_SIZE];     			// Buffer for receiving packets
+	struct timeval tp;         			// Timestamp structure
 
 	/* check command line arguments */
 	if (argc != 3) {
@@ -183,8 +182,8 @@ int main(int argc, char **argv) {
 
 	// Initialize receiver state
 	init_receiver_buffer();
-	clientlen = sizeof(struct sockaddr_in);
-    
+	clientlen = sizeof(clientaddr);
+
 	// Start logging
 	VLOG(DEBUG, "Waiting for Packets...");
 
@@ -196,27 +195,27 @@ int main(int argc, char **argv) {
         	error("ERROR in recvfrom");
     	}
 
-    	// Log client information
-    	VLOG(DEBUG, "Received from client %s:%d",
-         	inet_ntoa(clientaddr.sin_addr),
-         	ntohs(clientaddr.sin_port));
-
     	// Cast received data to packet structure
     	tcp_packet *received_pkt = (tcp_packet *)buffer;
-   	 
-    	// Check for EOF packet (marked by zero data size)
+
+		// Log client information
+		VLOG(DEBUG, "Received packet %d from client %s:%d",
+			received_pkt->hdr.seqno,
+			inet_ntoa(clientaddr.sin_addr),
+			ntohs(clientaddr.sin_port));
+
+		// Check for EOF packet (marked by zero data size)
     	if(received_pkt->hdr.data_size == 0) {
         	VLOG(INFO, "End Of File has been reached");
        	 
         	// Process any remaining buffered packets
         	process_received_packets(fp);
        	 
-        	// Send final ACK multiple times for reliability
-        	for(int i = 0; i < 3; i++) {
-            	send_ack(sockfd, rcv_base, &clientaddr, clientlen);
-        	}
-       	 
-        	// Clean up and exit
+        	// Send final ACK
+			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
+
+			VLOG(INFO, "Final ACK sent, now terminating");
+			// Clean up and exit
         	fclose(fp);
         	break;
     	}
@@ -237,25 +236,30 @@ int main(int argc, char **argv) {
     	}
 
     	// Process received packet based on its sequence number
-    	if(received_pkt->hdr.seqno == rcv_base) {
-        	// In-order packet - write directly to file
+
+		// In-order packet - write directly to file
+		if(received_pkt->hdr.seqno == rcv_base) {
         	fseek(fp, rcv_base, SEEK_SET);
         	fwrite(received_pkt->data, 1, received_pkt->hdr.data_size, fp);
-        	rcv_base += received_pkt->hdr.data_size;
+
+			// Send cumulative acknowledgment
+			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
+
+			// Update rcv_base
+			rcv_base += received_pkt->hdr.data_size;
        	 
         	// Check if we can now process any buffered packets
         	process_received_packets(fp);
     	}
-    	else if(received_pkt->hdr.seqno > rcv_base) {
-        	// Out-of-order packet - store in buffer
+
+		// Out-of-order packet - store in buffer
+		else if(received_pkt->hdr.seqno > rcv_base) {
         	int slot = get_buffer_slot(received_pkt->hdr.seqno);
        	 
         	if(!receiver_buffer[slot].is_valid) {
             	// Allocate space and store packet
-            	receiver_buffer[slot].packet = malloc(TCP_HDR_SIZE +
-                                                	received_pkt->hdr.data_size);
-            	memcpy(receiver_buffer[slot].packet, received_pkt,
-                   	TCP_HDR_SIZE + received_pkt->hdr.data_size);
+            	receiver_buffer[slot].packet = malloc(TCP_HDR_SIZE + received_pkt->hdr.data_size);
+            	memcpy(receiver_buffer[slot].packet, received_pkt, TCP_HDR_SIZE + received_pkt->hdr.data_size);
             	receiver_buffer[slot].is_valid = true;
            	 
             	// Update highest sequence number seen
@@ -263,10 +267,10 @@ int main(int argc, char **argv) {
                 	highest_seqno = received_pkt->hdr.seqno;
             	}
         	}
-    	}
 
-    	// Send cumulative acknowledgment
-    	send_ack(sockfd, rcv_base, &clientaddr, clientlen);
+			// Send cumulative acknowledgment
+			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
+		}
 	}
 
 	return 0;
