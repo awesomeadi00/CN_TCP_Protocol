@@ -1,11 +1,4 @@
 def write_numbers_to_file(n, filename="input_sample.txt"):
-    """
-    Create a text file and write numbers from 1 to n.
-
-    Parameters:
-    - n (int): The maximum number to write to the file.
-    - filename (str): The name of the file to create (default: 'numbers.txt').
-    """
     try:
         with open(filename, "w") as file:
             for i in range(1, n + 1):
@@ -14,7 +7,5 @@ def write_numbers_to_file(n, filename="input_sample.txt"):
     except Exception as e:
         print(f"An error occurred: {e}")
 
-
-# Define the maximum number 'n'
-n = 1000  # Replace with your desired value
+n = 2000  
 write_numbers_to_file(n)

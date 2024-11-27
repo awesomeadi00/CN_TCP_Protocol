@@ -63,7 +63,7 @@ void start_timer();
 void stop_timer();
 void reset_timer();
 void send_packet(int slot);
-void process_ack(tcp_packet *ack_pkt);
+void process_ack(tcp_packet *ack_pkt, int data_len);
 void resend_packets(int sig);
 void init_timer(int delay, void (*sig_handler)(int));
 
@@ -188,10 +188,13 @@ void send_packet(int slot)
  * - Window advancement
  * - Buffer management
  */
-void process_ack(tcp_packet *ack_pkt)
+void process_ack(tcp_packet *ack_pkt, int data_len)
 {
 	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
 	VLOG(DEBUG, "Recieved ACK %d", ack_no);
+
+	// Prevent some sort of race condition
+	stop_timer();
 
 	// If we receive an ack which is below the base (Duplicate ACK)
 	if (ack_no < send_base)
@@ -238,20 +241,16 @@ void process_ack(tcp_packet *ack_pkt)
 	}
 
 	// Advance send_base (sliding window)
-	send_base = ack_no + DATA_SIZE;
-
-	// Log window advancement
+	send_base = ack_no + data_len;
 	VLOG(DEBUG, "Advanced send_base to %d", send_base);
 
-	// If all packets are acknowledged, stop the timer
 	if (send_base == next_seqno)
 	{
-		stop_timer();
+		stop_timer(); // No unacknowledged packets left
 	}
 	else
 	{
-		// Reset the timer for remaining unacknowledged packets
-		reset_timer();
+		reset_timer(); // Restart timer for remaining unacknowledged packets
 	}
 }
 
@@ -418,7 +417,7 @@ int main(int argc, char **argv)
 			}
 
 			tcp_packet *ack_pkt = (tcp_packet *)buffer;
-			process_ack(ack_pkt);
+			process_ack(ack_pkt, len);
 			no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
 			// Log new window state
@@ -441,22 +440,18 @@ int main(int argc, char **argv)
 					// Wait for all packets to be acknowledged
                 	while (send_base < next_seqno - DATA_SIZE) {
                     	fd_set readfds;
-						struct timeval timeout;
-						timeout.tv_sec = 0;
-						timeout.tv_usec = 50000; 
 						FD_ZERO(&readfds);
                     	FD_SET(sockfd, &readfds);
-                   	 
-                    	if (select(sockfd + 1, &readfds, NULL, NULL, &timeout) > 0) {
-                        	if (recvfrom(sockfd, buffer, MSS_SIZE, 0,
-                            	(struct sockaddr *)&serveraddr, &serverlen) < 0) {
-                            	error("recvfrom failed");
-                        	}
-                        	tcp_packet *ack_pkt = (tcp_packet *)buffer;
-                        	if (ack_pkt->hdr.ackno > send_base) {
-                            	process_ack(ack_pkt);
-                        	}
-                    	}
+
+						// Wait for any ACKs
+						if (recvfrom(sockfd, buffer, MSS_SIZE, 0,
+							(struct sockaddr *)&serveraddr, &serverlen) < 0) {
+							error("recvfrom failed");
+						}
+						tcp_packet *ack_pkt = (tcp_packet *)buffer;
+						if (ack_pkt->hdr.ackno > send_base) {
+							process_ack(ack_pkt, len);
+						}
                 	}
 
 					// Send EOF packet only after all data is acknowledged
