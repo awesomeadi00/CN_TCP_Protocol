@@ -114,6 +114,8 @@ void process_buffered_packets(FILE *fp)
 			break;
 		}
 
+		VLOG(DEBUG, "Processing buffered packet: %d", receiver_buffer[slot].packet->hdr.seqno);
+
 		// Write this packet's data to file at the correct position
 		fseek(fp, rcv_base, SEEK_SET);
 		fwrite(receiver_buffer[slot].packet->data,
@@ -127,8 +129,6 @@ void process_buffered_packets(FILE *fp)
 		receiver_buffer[slot].packet = NULL;
 		receiver_buffer[slot].is_buffered = false;
 	}
-
-	VLOG(DEBUG, "Processed buffered packets, updated receive_base to %d", rcv_base);
 }
 
 /*
@@ -280,6 +280,8 @@ int main(int argc, char **argv) {
 				VLOG(DEBUG, "Out-of-order packet %d already buffered - discarded", received_pkt->hdr.seqno);
 			}
 		}
+
+		VLOG(DEBUG, "Updated receive_base to %d", rcv_base);
 	}
 
 	return 0;

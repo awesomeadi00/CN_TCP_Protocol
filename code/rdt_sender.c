@@ -370,9 +370,9 @@ int main(int argc, char **argv)
 	// infinite loop continues till end of file is reached
 	while (1)
 	{
-    	if (!is_valid_window_state()) {
+		// Clean up and exit if invalid window state detected
+		if (!is_valid_window_state()) {
         	VLOG(INFO, "Invalid window state detected: send_base = %d next_seqno = %d", send_base, next_seqno);
-        	// Clean up and exit
         	fclose(fp);
         	return -1;  // Return with error
     	}
@@ -380,14 +380,39 @@ int main(int argc, char **argv)
     	fd_set readfds;
 		struct timeval timeout;
 		timeout.tv_sec = 0;
-		timeout.tv_usec = 1000; // 1ms timeout
+		timeout.tv_usec = 1000; // 1ms timeout for select call
 		int no_of_slots_left;
 
 		// Monitor socket for incoming ACKs
 		FD_ZERO(&readfds);
-    	FD_SET(sockfd, &readfds); 
-		if(select(sockfd + 1, &readfds, NULL, NULL, &timeout) < 0) {
+    	FD_SET(sockfd, &readfds);
+
+		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+		if (activity < 0)
+		{
 			error("select failed");
+		}
+
+		if(activity == 0) {
+			printf("Select Call timed out...\n");
+		}
+
+		// Process ACKs if data is available on the socket
+		if (activity > 0 && FD_ISSET(sockfd, &readfds))
+		{
+			// Receive an ACK from the reciever
+			if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
+			{
+				error("recvfrom failed");
+			}
+
+			tcp_packet *ack_pkt = (tcp_packet *)buffer;
+			process_ack(ack_pkt);
+			no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
+
+			// Log new window state
+			VLOG(DEBUG, "Window Status: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
+				 send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
 		}
 
 		// If the window is not full, send more packets
@@ -510,25 +535,6 @@ int main(int argc, char **argv)
 
     	else {
 			VLOG(DEBUG, "Window Status: FULL");
-    	}
-
-    	// Process ACKs if data is available on the socket
-    	if (FD_ISSET(sockfd, &readfds) || window_is_full())
-    	{
-        	// Receive an ACK from the reciever
-        	if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) < 0)
-        	{
-            	error("recvfrom failed");
-        	}
-
-        	tcp_packet *ack_pkt = (tcp_packet *)buffer;
-			process_ack(ack_pkt);
-			no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
-
-			// Log new window state
-			VLOG(DEBUG, "Window Status: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
-				send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
-        	
     	}
 	}
 
