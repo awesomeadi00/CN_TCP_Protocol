@@ -16,5 +16,5 @@ def write_numbers_to_file(n, filename="input_sample.txt"):
 
 
 # Define the maximum number 'n'
-n = 10000  # Replace with your desired value
+n = 1000  # Replace with your desired value
 write_numbers_to_file(n)

@@ -370,6 +370,8 @@ int main(int argc, char **argv)
 	// infinite loop continues till end of file is reached
 	while (1)
 	{
+		printf("\n");
+		
 		// Clean up and exit if invalid window state detected
 		if (!is_valid_window_state()) {
         	VLOG(INFO, "Invalid window state detected: send_base = %d next_seqno = %d", send_base, next_seqno);
@@ -380,7 +382,7 @@ int main(int argc, char **argv)
     	fd_set readfds;
 		struct timeval timeout;
 		timeout.tv_sec = 0;
-		timeout.tv_usec = 1000; // 1ms timeout for select call
+		timeout.tv_usec = 50000; 
 		int no_of_slots_left;
 
 		// Monitor socket for incoming ACKs
@@ -390,12 +392,21 @@ int main(int argc, char **argv)
 		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 		if (activity < 0)
 		{
-			error("select failed");
+			if (errno == EINTR)
+			{
+				// Interrupted by a signal such as the retransmission (e.g., SIGALRM), retry select
+				continue;
+			}
+			else
+			{
+				perror("select failed");
+				exit(EXIT_FAILURE);
+			}
 		}
 
-		if(activity == 0) {
-			printf("Select Call timed out...\n");
-		}
+		// if(activity == 0) {
+		// 	printf("Select Call timed out...\n");
+		// }
 
 		// Process ACKs if data is available on the socket
 		if (activity > 0 && FD_ISSET(sockfd, &readfds))
@@ -432,7 +443,7 @@ int main(int argc, char **argv)
                     	fd_set readfds;
 						struct timeval timeout;
 						timeout.tv_sec = 0;
-						timeout.tv_usec = 1000; // 1ms timeout
+						timeout.tv_usec = 50000; 
 						FD_ZERO(&readfds);
                     	FD_SET(sockfd, &readfds);
                    	 
@@ -466,8 +477,8 @@ int main(int argc, char **argv)
 						// Wait for ACK with timeout
 						fd_set readfds;
 						struct timeval timeout;
-						timeout.tv_sec = 1; // 1-second timeout
-						timeout.tv_usec = 0;
+						timeout.tv_sec = 0; 
+						timeout.tv_usec = 50000;
 						FD_ZERO(&readfds);
 						FD_SET(sockfd, &readfds);
 

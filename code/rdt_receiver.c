@@ -193,6 +193,8 @@ int main(int argc, char **argv) {
 
 	// Main packet processing loop
 	while (1) {
+		printf("\n");
+		
     	// Receive a packet
     	if(recvfrom(sockfd, buffer, MSS_SIZE, 0,
                 	(struct sockaddr *)&clientaddr, &clientlen) < 0) {
