@@ -268,8 +268,7 @@ int main(int argc, char **argv) {
             	}
         	}
 
-			// Send cumulative acknowledgment
-			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
+			VLOG(DEBUG, "Out of order packet received, buffered packet: %d", received_pkt->hdr.seqno);
 		}
 	}
 

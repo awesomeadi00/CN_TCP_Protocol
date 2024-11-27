@@ -238,7 +238,7 @@ void process_ack(tcp_packet *ack_pkt)
 	}
 
 	// Advance send_base (sliding window)
-	send_base = ack_no;
+	send_base = ack_no + DATA_SIZE;
 
 	// Log window advancement
 	VLOG(DEBUG, "Advanced send_base to %d", send_base);
@@ -263,7 +263,7 @@ void resend_packets(int sig)
 {
 	if (sig == SIGALRM)
 	{
-    	VLOG(INFO, "Timeout occurred. Retransmitting all unacknowledged packets");
+    	VLOG(INFO, "Timeout occurred for packet: %lu. Retransmitting...", send_base + DATA_SIZE);
 
     	for (int i = 0; i < WINDOW_SIZE; i++)
     	{
