@@ -22,6 +22,7 @@ Key features:
 #include <time.h>
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
 
 #include "packet.h"
 #include "common.h"
@@ -43,6 +44,7 @@ typedef struct
 	tcp_packet *packet;   		// Pointer to actual packet data
 	bool is_sent;         		// Flag indicating if packet has been sent
 	bool is_acked;        		// Flag indicating if packet has been acknowledged
+	bool is_retransmitted;		// Flag indicating if the packet has been retransmitted
 	struct timeval sent_time; 	// Time when packet was last sent
 } window_slot;
 
@@ -65,7 +67,9 @@ void reset_timer();
 void send_packet(int slot);
 void process_ack(tcp_packet *ack_pkt);
 void resend_packets(int sig);
-void init_timer(int delay, void (*sig_handler)(int));
+void init_timer(float delay, void (*sig_handler)(int));
+void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted);
+
 
 
 // Global variables
@@ -79,6 +83,14 @@ struct itimerval timer;             	// Timer for packet retransmission
 sigset_t sigmask;                   	// Signal mask for timer management
 bool timer_running = false;         	// Flag to track timer state
 
+// Global variables for RTO and RTT calculations:
+float wrtt = 0.0;			  			// Weighted average of RTT values (wrtt - (1-alpha) * wrtt + (alpha * sample_rtt))
+float devrtt = 0.0;			  			// Deviation in RTT (devrtt = (1-beta) * devrtt + beta * |wrtt - sample_rtt|)
+float alpha = 0.125;		  			// Coefficient for weighted average RTT
+float beta = 0.25;			  			// Coefficient for deviation in RTT
+float rto = 3.0;						// Retransmission Timeout (RTO), initialized to 3 seconds
+int consecutive_timeouts = 0; 			// Counter for exponential backoff
+
 /*
  * Initialize the sender's window buffer
  * Sets all slots to empty state
@@ -90,6 +102,7 @@ void init_sender_window()
     	sender_window[i].packet = NULL;
     	sender_window[i].is_sent = false;
     	sender_window[i].is_acked = false;
+		sender_window[i].is_retransmitted = false;
 	}
 }
 
@@ -160,6 +173,8 @@ void reset_timer()
  */
 void send_packet(int slot)
 {
+	printf("\n");
+
 	if (sendto(sockfd, sender_window[slot].packet,
 			   TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
 			   (const struct sockaddr *)&serveraddr, serverlen) < 0)
@@ -195,6 +210,15 @@ void process_ack(tcp_packet *ack_pkt)
 
 	// Prevent some sort of race condition
 	stop_timer();
+
+	// When a new ACK comes in: reset consecutive_timeouts to zero and update the timer
+	if (ack_no >= send_base)
+	{
+		int slot = get_window_slot(ack_no);
+		consecutive_timeouts = 0; // Reset backoff on successful ACK
+		update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
+		reset_timer();
+	}
 
 	// If we receive an ack which is below the base (Duplicate ACK)
 	if (ack_no < send_base)
@@ -244,6 +268,7 @@ void process_ack(tcp_packet *ack_pkt)
 			free(sender_window[slot].packet);
 			sender_window[slot].packet = NULL;
 			sender_window[slot].is_acked = true;
+			sender_window[slot].is_retransmitted = false;
 		}
 	}
 
@@ -272,7 +297,11 @@ void resend_packets(int sig)
 {
 	if (sig == SIGALRM)
 	{
-    	VLOG(INFO, "Timeout occurred for packet: %d. Retransmitting...", send_base);
+		// Exponential backoff: Doubling RTO when timouts occur (with a ceiling of 240)
+		consecutive_timeouts++;
+		rto = fmin(rto * pow(2, consecutive_timeouts), 240.0); 
+
+		VLOG(INFO, "Timeout occurred for packet: %d, retransmitting packet. New RTO: %.3f", send_base, rto);
 
     	for (int i = 0; i < WINDOW_SIZE; i++)
     	{
@@ -282,7 +311,7 @@ void resend_packets(int sig)
 
         	int slot = get_window_slot(seqno);
         	if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
-        	{
+        	{				
             	// Retransmit the unacknowledged packet
             	if (sendto(sockfd, sender_window[slot].packet,
                        	TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
@@ -290,8 +319,9 @@ void resend_packets(int sig)
             	{
                 	error("sendto failed during retransmission");
             	}
+				sender_window[slot].is_retransmitted = true;
 
-            	gettimeofday(&sender_window[slot].sent_time, NULL);
+				gettimeofday(&sender_window[slot].sent_time, NULL);
             	VLOG(DEBUG, "Retransmitted packet %d", seqno);
         	}
     	}
@@ -304,22 +334,72 @@ void resend_packets(int sig)
 /*
  * Initialize timer for packet timeout detection
  * Parameters:
- * delay: Timeout duration in milliseconds
+ * delay: Timeout duration in milliseconds (float)
  * sig_handler: Function to call on timeout
  */
-void init_timer(int delay, void (*sig_handler)(int))
+void init_timer(float delay, void (*sig_handler)(int))
 {
 	signal(SIGALRM, sig_handler);
 
-	// Set up timer intervals
-	timer.it_interval.tv_sec = delay / 1000;
-	timer.it_interval.tv_usec = (delay % 1000) * 1000;
-	timer.it_value.tv_sec = delay / 1000;
-	timer.it_value.tv_usec = (delay % 1000) * 1000;
+	timer.it_interval.tv_sec = 0;
+	timer.it_interval.tv_usec = 0;
+	timer.it_value.tv_sec = (int)delay;
+	timer.it_value.tv_usec = (delay - (int)delay) * 1e6;
 
 	// Initialize signal mask
 	sigemptyset(&sigmask);
 	sigaddset(&sigmask, SIGALRM);
+}
+
+/*
+ * Updates the RTT and RTO values dynamically  
+ * Parameters:
+ * sent time: the time it when the packet was sent
+ */
+void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted)
+{
+	// Apply Karn's Algorithm: ignore RTT for retransmitted packets
+	if (is_retransmitted)
+	{
+		VLOG(DEBUG, "Skipping RTT update for retransmitted packet.");
+		return; 
+	}
+
+	struct timeval ack_time;
+	gettimeofday(&ack_time, NULL);
+
+	// Calculate RTT in seconds
+	float sample_rtt = (ack_time.tv_sec - sent_time.tv_sec) +
+					   (ack_time.tv_usec - sent_time.tv_usec) / 1e6;
+
+	if (sample_rtt > 0)
+	{
+		// If this is the first RTT measurement
+		if (wrtt == 0)
+		{
+			wrtt = sample_rtt; 
+			devrtt = sample_rtt / 2;
+		}
+
+		//  We calculate the deviation of RTT and weighted average of RTT based on the formula
+		else
+		{
+			devrtt = (1 - beta) * devrtt + beta * fabs(wrtt - sample_rtt);
+			wrtt = (1 - alpha) * wrtt + alpha * sample_rtt;
+		}
+
+		// Calculate RTO
+		rto = wrtt + 4 * devrtt;
+
+		// Clamp RTO to allowable range (1 second to 240 seconds)
+		if (rto < 1.0)
+			rto = 1.0;
+		if (rto > 240.0)
+			rto = 240.0;
+
+		VLOG(DEBUG, "Updated RTT/RTO: sample_rtt = %.3f w_rtt = %.3f dev_rtt = %.3f rto = %.3f",
+			 sample_rtt, wrtt, devrtt, rto);
+	}
 }
 
 int main(int argc, char **argv)
@@ -374,7 +454,7 @@ int main(int argc, char **argv)
 
 	// Stop and wait protocol ------------------------------------------------
 	// Initialize the timer with the specified retry duration and the resend_packets function as the signal handler.
-	init_timer(RETRY, resend_packets);
+	init_timer(rto, resend_packets);
 
 	// infinite loop continues till end of file is reached
 	while (1)
@@ -441,6 +521,7 @@ int main(int argc, char **argv)
         	if (len <= 0) {
 				// If  EOF (completed sending all the data successfully:
 				if (feof(fp)) {
+					printf("\n");
 					VLOG(INFO, "End Of File has been reached");
 
 					// Wait for all packets to be acknowledged
