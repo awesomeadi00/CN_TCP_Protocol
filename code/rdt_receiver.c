@@ -213,7 +213,11 @@ int main(int argc, char **argv) {
 		// Check for EOF packet (marked by zero data size)
     	if(received_pkt->hdr.data_size == 0) {
         	VLOG(INFO, "EOF Packet %d received. End of file has been reached", received_pkt->hdr.seqno);
-			VLOG(INFO, "Receiver terminating.");
+       	 
+        	// Process any remaining buffered packets
+			process_buffered_packets(fp);
+
+			VLOG(INFO, "Final ACK sent, receiver terminating.");
         	break;
     	}
 
