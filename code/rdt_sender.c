@@ -225,6 +225,13 @@ void process_ack(tcp_packet *ack_pkt)
 		return; // No further processing needed for duplicate ACK
 	}
 
+	// Determine the size of the last acknowledged packet before freeing it
+	int data_len = 0;
+	if (sender_window[get_window_slot(ack_no)].packet != NULL)
+	{
+		data_len = get_data_size(sender_window[get_window_slot(ack_no)].packet);
+	}
+
 	// Handle cumulative ACK
 	int num_acked = (ack_no - send_base) / DATA_SIZE;
 	for (int i = 0; i <= num_acked; i++)
@@ -239,9 +246,6 @@ void process_ack(tcp_packet *ack_pkt)
 			sender_window[slot].is_acked = true;
 		}
 	}
-
-	// Get the size of the last acknowledged packet
-	int data_len = get_data_size(sender_window[get_window_slot(ack_no)].packet);
 
 	// Advance send_base (sliding window)
 	send_base = ack_no + data_len;
@@ -444,7 +448,7 @@ int main(int argc, char **argv)
 					VLOG(INFO, "End Of File has been reached");
 
 					// Wait for all packets to be acknowledged
-                	while (send_base < next_seqno - DATA_SIZE) {
+                	while (send_base < next_seqno) {
                     	fd_set readfds;
 						FD_ZERO(&readfds);
                     	FD_SET(sockfd, &readfds);
@@ -467,41 +471,43 @@ int main(int argc, char **argv)
 					eof_pkt->hdr.seqno = next_seqno;	  // Assign sequence number
 					eof_pkt->hdr.ctr_flags = 0x02;		  // Set FIN flag
 
-					while (1)
+					int max_attempts = 3; // Retry sending EOF 3 times
+					int attempts = 0;
+					while (attempts < max_attempts)
 					{
 						// Send EOF packet
-						sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
-							   (const struct sockaddr *)&serveraddr, serverlen);
+						sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0, (const struct sockaddr *)&serveraddr, serverlen);
 
 						VLOG(DEBUG, "EOF packet %d sent, waiting for acknowledgment", eof_pkt->hdr.seqno);
 
 						// Wait for ACK with timeout
-						fd_set readfds;
-						struct timeval timeout;
-						timeout.tv_sec = 0; 
-						timeout.tv_usec = 50000;
-						FD_ZERO(&readfds);
-						FD_SET(sockfd, &readfds);
-
 						int rv = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 
 						if (rv > 0)
 						{
-							// Wait to receive final ACK
-							char buffer[MSS_SIZE];
-							recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen);
-							tcp_packet *ack_pkt = (tcp_packet *)buffer;
-
-							if (ack_pkt->hdr.ctr_flags == ACK && ack_pkt->hdr.ackno == next_seqno)
+							// Process final ACK
+							if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) > 0)
 							{
-								VLOG(INFO, "EOF acknowledgment received, terminating sender");
-								break;
+								tcp_packet *ack_pkt = (tcp_packet *)buffer;
+
+								if (ack_pkt->hdr.ctr_flags == ACK && ack_pkt->hdr.ackno == next_seqno)
+								{
+									VLOG(INFO, "EOF acknowledgment received, terminating sender");
+									break;
+								}
 							}
 						}
 						else
 						{
 							VLOG(INFO, "EOF acknowledgment not received, retransmitting EOF");
 						}
+
+						attempts++;
+					}
+
+					if (attempts == max_attempts)
+					{
+						VLOG(DEBUG, "Failed to receive EOF acknowledgment after multiple attempts");
 					}
 
 					free(eof_pkt); // Clean up EOF packet

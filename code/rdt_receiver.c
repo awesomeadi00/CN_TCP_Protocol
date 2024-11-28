@@ -221,6 +221,7 @@ int main(int argc, char **argv) {
 			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
 
 			VLOG(INFO, "Final ACK sent, now terminating");
+			sleep(1);
 			// Clean up and exit
         	fclose(fp);
         	break;
