@@ -212,18 +212,8 @@ int main(int argc, char **argv) {
 
 		// Check for EOF packet (marked by zero data size)
     	if(received_pkt->hdr.data_size == 0) {
-        	VLOG(INFO, "End Of File has been reached");
-       	 
-        	// Process any remaining buffered packets
-			process_buffered_packets(fp);
-
-			// Send final ACK
-			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
-
-			VLOG(INFO, "Final ACK sent, now terminating");
-			sleep(1);
-			// Clean up and exit
-        	fclose(fp);
+        	VLOG(INFO, "EOF Packet %d received. End of file has been reached", received_pkt->hdr.seqno);
+			VLOG(INFO, "Receiver terminating.");
         	break;
     	}
 
@@ -292,5 +282,7 @@ int main(int argc, char **argv) {
 		VLOG(DEBUG, "Updated receive_base to %d", rcv_base);
 	}
 
+	// Clean up and exit
+	fclose(fp);
 	return 0;
 }
