@@ -63,7 +63,7 @@ void start_timer();
 void stop_timer();
 void reset_timer();
 void send_packet(int slot);
-void process_ack(tcp_packet *ack_pkt, int data_len);
+void process_ack(tcp_packet *ack_pkt);
 void resend_packets(int sig);
 void init_timer(int delay, void (*sig_handler)(int));
 
@@ -188,7 +188,7 @@ void send_packet(int slot)
  * - Window advancement
  * - Buffer management
  */
-void process_ack(tcp_packet *ack_pkt, int data_len)
+void process_ack(tcp_packet *ack_pkt)
 {
 	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
 	VLOG(DEBUG, "Recieved ACK %d", ack_no);
@@ -239,6 +239,9 @@ void process_ack(tcp_packet *ack_pkt, int data_len)
 			sender_window[slot].is_acked = true;
 		}
 	}
+
+	// Get the size of the last acknowledged packet
+	int data_len = get_data_size(sender_window[get_window_slot(ack_no)].packet);
 
 	// Advance send_base (sliding window)
 	send_base = ack_no + data_len;
@@ -420,12 +423,12 @@ int main(int argc, char **argv)
 			}
 
 			tcp_packet *ack_pkt = (tcp_packet *)buffer;
-			process_ack(ack_pkt, len);
+			process_ack(ack_pkt);
 			no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
 			// Log new window state
 			VLOG(DEBUG, "Window Status: Oldest unACKed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d",
-				 send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
+				 send_base, next_seqno, len, no_of_slots_left);
 		}
 
 		// If the window is not full, send more packets
@@ -453,7 +456,7 @@ int main(int argc, char **argv)
 						}
 						tcp_packet *ack_pkt = (tcp_packet *)buffer;
 						if (ack_pkt->hdr.ackno > send_base) {
-							process_ack(ack_pkt, len);
+							process_ack(ack_pkt);
 						}
                 	}
 
@@ -470,7 +473,7 @@ int main(int argc, char **argv)
 						sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0,
 							   (const struct sockaddr *)&serveraddr, serverlen);
 
-						VLOG(DEBUG, "EOF packet sent, waiting for acknowledgment");
+						VLOG(DEBUG, "EOF packet %d sent, waiting for acknowledgment", eof_pkt->hdr.seqno);
 
 						// Wait for ACK with timeout
 						fd_set readfds;
@@ -538,7 +541,7 @@ int main(int argc, char **argv)
             	next_seqno += len;
 				no_of_slots_left = WINDOW_SIZE - ((next_seqno - send_base) / DATA_SIZE);
 
-				VLOG(DEBUG, "Window Status: Oldest unACKAed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d", send_base, next_seqno, next_seqno - send_base, no_of_slots_left);
+				VLOG(DEBUG, "Window Status: Oldest unACKAed seqno = %d | Next seqno = %d | Datasize = %d | Number of slots left: %d", send_base, next_seqno, len, no_of_slots_left);
         	}
     	}
 
