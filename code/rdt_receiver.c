@@ -234,12 +234,17 @@ int main(int argc, char **argv) {
     	VLOG(DEBUG, "Received at (epoch): %lu | Data size: %d | Seqno: %d", tp.tv_sec,
          	received_pkt->hdr.data_size, received_pkt->hdr.seqno);
 
-    	// Discard retransmissions for already acknowledged packets
+    	// If a packet that arrived is before the receive base, it is a re-transmitted packet. 
+		// Hence, we send the ACK once more to the sender. 
     	if (received_pkt->hdr.seqno < rcv_base)
     	{
-        	VLOG(DEBUG, "Discarding retransmission for seqno %d (already ACKed)", received_pkt->hdr.seqno);
-        	continue; // Skip further processing for this packet
-    	}
+			VLOG(DEBUG, "Retransmission received for seqno %d (already ACKed). Re-sending ACK.", received_pkt->hdr.seqno);
+
+			// Re-send the acknowledgment for the corresponding packet
+			send_ack(sockfd, received_pkt->hdr.seqno, &clientaddr, clientlen);
+
+			continue; // Skip further processing for this packet
+		}
 
     	// Process received packet based on its sequence number
 

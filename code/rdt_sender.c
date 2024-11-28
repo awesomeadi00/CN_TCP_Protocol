@@ -227,7 +227,7 @@ void process_ack(tcp_packet *ack_pkt, int data_len)
 
 	// Handle cumulative ACK
 	int num_acked = (ack_no - send_base) / DATA_SIZE;
-	for (int i = 0; i < num_acked; i++)
+	for (int i = 0; i <= num_acked; i++)
 	{
 		int slot = get_window_slot(send_base + i * DATA_SIZE);
 
@@ -244,13 +244,16 @@ void process_ack(tcp_packet *ack_pkt, int data_len)
 	send_base = ack_no + data_len;
 	VLOG(DEBUG, "Advanced send_base to %d", send_base);
 
+	// This is when all packets have been acknowledged (base has caught up to next_seqno)
 	if (send_base == next_seqno)
 	{
-		stop_timer(); // No unacknowledged packets left
+		stop_timer(); 
 	}
+
+	// Restart timer for remaining unacknowledged packets
 	else
 	{
-		reset_timer(); // Restart timer for remaining unacknowledged packets
+		reset_timer(); 
 	}
 }
 
