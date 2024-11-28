@@ -461,7 +461,7 @@ int main(int argc, char **argv)
                 	}
 
 					// Send EOF packet only after all data is acknowledged
-					VLOG(INFO, "All packets acknowledged, sender is terminating");
+					VLOG(INFO, "All packets acknowledged, starting EOF handshake");
 
 					tcp_packet *eof_pkt = make_packet(0); // Create EOF packet
 					eof_pkt->hdr.seqno = next_seqno;	  // Assign sequence number
@@ -503,7 +503,7 @@ int main(int argc, char **argv)
 
 					if (attempts == max_attempts)
 					{
-						VLOG(DEBUG, "Failed to receive EOF acknowledgment after multiple attempts");
+						VLOG(DEBUG, "Failed to receive EOF acknowledgment after multiple attempts, sender terminating.");
 					}
 
 					free(eof_pkt); // Clean up EOF packet
