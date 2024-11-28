@@ -413,10 +413,6 @@ int main(int argc, char **argv)
 			}
 		}
 
-		// if(activity == 0) {
-		// 	printf("Select Call timed out...\n");
-		// }
-
 		// Process ACKs if data is available on the socket
 		if (activity > 0 && FD_ISSET(sockfd, &readfds))
 		{

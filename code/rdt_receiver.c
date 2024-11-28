@@ -217,6 +217,8 @@ int main(int argc, char **argv) {
         	// Process any remaining buffered packets
 			process_buffered_packets(fp);
 
+			send_ack(sockfd, received_pkt->hdr.seqno, &clientaddr, clientlen);
+
 			VLOG(INFO, "Final ACK sent, receiver terminating.");
         	break;
     	}
