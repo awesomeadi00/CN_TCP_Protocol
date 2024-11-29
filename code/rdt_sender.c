@@ -59,7 +59,7 @@ bool is_valid_window_state();
 void log_cwnd(float time);
 void init_cwnd_log();
 void close_cwnd_log();
-void update_cwnd(bool is_new_ack, float time);
+void update_cwnd(float time);
 void reset_congestion_control();
 void handle_fast_retransmit(int ack_no);
 
@@ -101,8 +101,8 @@ typedef enum
 } CongestionControlState;
 CongestionControlState congestionState = SLOW_START;
 
-float cwnd = 1.0;	   						// Congestion window
-float ssthresh = 64.0; 						// Slow-start threshold
+float cwnd = 1.0;	   						// Congestion window (set to 1 packet initially)
+float ssthresh = 64.0; 						// Slow-start threshold (set to 64 initially)
 FILE *cwnd_log;		   						// CSV File for logging CWND
 
 // Window Related Helper Functions ------------------------------------------------------------------------------------------------------------------------------------------------
@@ -180,42 +180,39 @@ void close_cwnd_log()
 }
 
 // Updates CWND based on ACK and depending on the congestion control state
-void update_cwnd(bool is_new_ack, float time)
+void update_cwnd(float time)
 {
-	// If we receive an ACK
-	if (is_new_ack)
+	// If we are in slow start:
+	if (congestionState == SLOW_START)
 	{
-		// If we are in slow start:
-		if (congestionState == SLOW_START)
+		cwnd += 1.0; // Increment CWND linearly
+
+		// If the window is more than the ssthresh, then we can switch to congestion avoidance.
+		if (cwnd >= ssthresh)
 		{
-			cwnd += 1.0; // Increment CWND linearly
-
-			// If the window is more than the ssthresh, then we can switch to congestion avoidance.
-			if (cwnd >= ssthresh)
-			{
-				congestionState = CONGESTION_AVOIDANCE; 
-				VLOG(INFO, "Congestion Control: Transition to Congestion Avoidance");
-			}
+			congestionState = CONGESTION_AVOIDANCE; 
+			VLOG(INFO, "- Congestion Update: Switching to Congestion Avoidance");
 		}
-
-		// If we are already in congestion avoidance
-		else if (congestionState == CONGESTION_AVOIDANCE)
-		{
-			cwnd += 1.0 / cwnd; // Increment CWND incrementally
-		}
-
-		VLOG(INFO, "- Congestion Update: CWND: %.1f, SSTRESH: %.1f", cwnd, ssthresh);
-		log_cwnd(time); // Log CWND
 	}
+
+	// If we are already in congestion avoidance
+	else if (congestionState == CONGESTION_AVOIDANCE)
+	{
+		cwnd += 1.0 / cwnd; // Increment CWND incrementally
+	}
+
+	VLOG(INFO, "- Congestion Update: CWND: %.3f, SSTRESH: %.3f", cwnd, ssthresh);
+	log_cwnd(time); // Log CWND
 }
 
 // Handles congestion control reset under a timeout: Updates ssthresh value and CWND is reset
 void reset_congestion_control()
 {
-	ssthresh = fmax(cwnd / 2, 2.0); // Halve the congestion window
+	ssthresh = fmax(cwnd / 2, 2.0); // Adjust ssthresh
 	cwnd = 1.0;						// Reset CWND to 1
 	congestionState = SLOW_START;	// Transition to Slow Start
-	VLOG(INFO, "Reseting Congestion: CWND reset to %.3f, SSTHRESH set to %.3f", cwnd, ssthresh);
+	VLOG(INFO, "- Congestion Update: Timeout Occured! CWND reset to %.3f, SSTHRESH set to %.3f", cwnd, ssthresh);
+	VLOG(INFO, "- Congestion Update: Switching to Slow Start");
 }
 
 // Handles fast retransmit. Sends the packet once more, readjusting the ssthresh and CWND and switching back to SLOW START
@@ -228,7 +225,8 @@ void handle_fast_retransmit(int ack_no)
 		ssthresh = fmax(cwnd / 2, 2.0); // Adjust ssthresh
 		cwnd = 1.0;						// Reset CWND
 		congestionState = SLOW_START;	// Transition to Slow Start
-		VLOG(INFO, "Fast retransmit packet %d: CWND reset to %.3f, SSTHRESH set to %.3f", ack_no, cwnd, ssthresh);
+		VLOG(INFO, "- Congestion Update: Fast retransmit packet %d: CWND reset to %.3f, SSTHRESH set to %.3f", ack_no, cwnd, ssthresh);
+		VLOG(INFO, "- Congestion Update: Switching to Slow Start");
 	}
 }
 
@@ -287,10 +285,11 @@ void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted)
 		return;
 	}
 
+	// Get the ACK time
 	struct timeval ack_time;
 	gettimeofday(&ack_time, NULL);
 
-	// Calculate RTT in seconds
+	// Calculate RTT in seconds (Time the ACKed was received - Time the packet was sent)
 	float sample_rtt = (ack_time.tv_sec - sent_time.tv_sec) +
 					   (ack_time.tv_usec - sent_time.tv_usec) / 1e6;
 
@@ -378,13 +377,13 @@ void process_ack(tcp_packet *ack_pkt)
 		int slot = get_window_slot(ack_no);
 		consecutive_timeouts = 0; 
 		update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
-		update_cwnd(true, time(NULL)); 
+		update_cwnd(time(NULL)); 
 		reset_timer();
 	}
 
 
-		// If we receive an ack which is below the base (Duplicate ACK)
-		if (ack_no < send_base)
+	// If we receive an ack which is below the base (Duplicate ACK)
+	if (ack_no < send_base)
 	{
 		VLOG(DEBUG, "Received duplicate ACK for %d", ack_no);
 
