@@ -285,7 +285,7 @@ int main(int argc, char **argv) {
 			}
 		}
 
-		VLOG(DEBUG, "Updated receive_base to %d", rcv_base);
+		VLOG(DEBUG, "Advanced rcv_base to %d", rcv_base);
 	}
 
 	// Clean up and exit
