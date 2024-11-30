@@ -525,10 +525,7 @@ void initiate_eof_handshake(FILE *fp, char *buffer)
 			}
 
 			tcp_packet *ack_pkt = (tcp_packet *)buffer;
-			if (ack_pkt->hdr.ackno > send_base)
-			{
-				process_ack(ack_pkt);
-			}
+			process_ack(ack_pkt);
 		}
 	}
 
