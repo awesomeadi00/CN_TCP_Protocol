@@ -63,8 +63,8 @@ void reset_congestion_control();
 void handle_fast_retransmit(int ack_no);
 
 void init_timer(float delay, void (*sig_handler)(int));
-void start_timer();
-void stop_timer();
+void start_timer(bool restartTimer);
+void stop_timer(bool restartTimer);
 void reset_timer();
 
 void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted);
@@ -82,9 +82,10 @@ struct sockaddr_in serveraddr;				// Server address structure
 struct itimerval timer;						// Timer for packet retransmission
 sigset_t sigmask;							// Signal mask for timer management
 bool timer_running = false;					// Flag to track timer state
+bool window_full_gate = false;				// Gate to prevent FULL status from printing
 
 // Global variables for RTO and RTT calculations:
-float wrtt = 0.0;			  // Weighted average of RTT values (wrtt = (1-alpha) * wrtt + (alpha * sample_rtt))
+float wrtt = 0.0;		  // Weighted average of RTT values (wrtt = (1-alpha) * wrtt + (alpha * sample_rtt))
 float devrtt = 0.0;			  // Deviation in RTT (devrtt = (1-beta) * devrtt + beta * |wrtt - sample_rtt|)
 float alpha = 0.125;		  // Coefficient for weighted average RTT
 float beta = 0.25;			  // Coefficient for deviation in RTT
@@ -246,7 +247,7 @@ void init_timer(float delay, void (*sig_handler)(int))
 }
 
 // Start timer if not already running
-void start_timer()
+void start_timer(bool restartTimer)
 {
 	if (!timer_running)
 	{
@@ -254,23 +255,30 @@ void start_timer()
 		setitimer(ITIMER_REAL, &timer, NULL);
 		timer_running = true;
 	}
+
+	if(!restartTimer)
+		VLOG(DEBUG, "Timer Started!");
 }
 
 // Stop timer if running
-void stop_timer()
+void stop_timer(bool restartTimer)
 {
 	if (timer_running)
 	{
 		sigprocmask(SIG_BLOCK, &sigmask, NULL);
 		timer_running = false;
 	}
+
+	if(!restartTimer)
+		VLOG(DEBUG, "Timer Stopped!");
 }
 
 // Reset timer by stopping and starting it
 void reset_timer()
 {
-	stop_timer();
-	start_timer();
+	stop_timer(true);
+	start_timer(true);
+	VLOG(DEBUG, "Timer Restarted - new send_base allocated.");
 }
 
 // RTT and RTO Calculation Functions: -------------------------------------------------------------------------------------------------------------------------------------------
@@ -340,9 +348,9 @@ void send_packet(int slot)
 	gettimeofday(&sender_window[slot].sent_time, NULL);
 
 	// Start timer for first unacked packet
-	if (next_seqno == send_base)
+	if (next_seqno == 0 && send_base == 0)
 	{
-		start_timer();
+		start_timer(false);
 	}
 
 	VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
@@ -360,11 +368,13 @@ void send_packet(int slot)
  */
 void process_ack(tcp_packet *ack_pkt)
 {
+	printf("\n");
+
 	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
 	VLOG(DEBUG, "Recieved ACK %d", ack_no);
 
 	// Prevent some sort of race condition
-	stop_timer();
+	// stop_timer();
 
 	// When a new ACK comes in:
 	// - Reset consecutive_timeouts to zero and update the timer
@@ -433,7 +443,7 @@ void process_ack(tcp_packet *ack_pkt)
 	// This is when all packets have been acknowledged (base has caught up to next_seqno)
 	if (send_base == next_seqno)
 	{
-		stop_timer();
+		stop_timer(false);
 	}
 
 	// Restart timer for remaining unacknowledged packets
@@ -546,8 +556,6 @@ int main(int argc, char **argv)
 	// Infinite loop continues till end of file is reached
 	while (1)
 	{
-		printf("\n");
-
 		// Clean up and exit if invalid window state detected
 		if (!is_valid_window_state())
 		{
@@ -602,6 +610,8 @@ int main(int argc, char **argv)
 		// If the window is not full, send more packets
 		if (!window_is_full())
 		{
+			window_full_gate = false;
+
 			// Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
 			len = fread(buffer, 1, DATA_SIZE, fp);
 
@@ -724,7 +734,12 @@ int main(int argc, char **argv)
 
 		else
 		{
-			VLOG(DEBUG, "Window Status: FULL");
+			// Just to avoid it printing over and over again.
+			if(!window_full_gate) {
+				VLOG(DEBUG, "Window Status: FULL");
+				window_full_gate = true;
+			}
+			
 		}
 	}
 

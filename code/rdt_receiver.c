@@ -269,6 +269,7 @@ int main(int argc, char **argv)
 
 			// Check if we can now process any buffered packets
 			process_buffered_packets(fp);
+			VLOG(DEBUG, "Advanced rcv_base to %d", rcv_base);
 		}
 
 		// Out-of-order packet - store in buffer
@@ -298,8 +299,6 @@ int main(int argc, char **argv)
 				VLOG(DEBUG, "Out-of-order packet %d already buffered - discarded", received_pkt->hdr.seqno);
 			}
 		}
-
-		VLOG(DEBUG, "Advanced rcv_base to %d", rcv_base);
 	}
 
 	// Clean up and exit
