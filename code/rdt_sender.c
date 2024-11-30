@@ -71,6 +71,7 @@ void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted);
 void send_packet(int slot);
 void process_ack(tcp_packet *ack_pkt);
 void resend_packets(int sig);
+void initiate_eof_handshake(FILE *fp, char *buffer);
 
 // Global variables -----------------------------------------------------------------------------------------------------------------------------------------------------------
 window_slot sender_window[MAX_WINDOW_SIZE]; // Array of window slots
@@ -347,6 +348,9 @@ void send_packet(int slot)
 
 	// Update packet state
 	sender_window[slot].is_sent = true;
+	sender_window[slot].is_acked = false;
+	sender_window[slot].is_retransmitted = false;
+
 	gettimeofday(&sender_window[slot].sent_time, NULL);
 
 	// Start timer for first unacked packet
@@ -479,6 +483,108 @@ void resend_packets(int sig)
 	}
 }
 
+// Final function to indicate the end of file has been reached and we will initialize the EOF handshake
+void initiate_eof_handshake(FILE *fp, char *buffer)
+{
+	printf("\n");
+	VLOG(INFO, "End Of File has been reached");
+
+	fd_set readfds;
+	FD_ZERO(&readfds);
+	FD_SET(sockfd, &readfds);
+
+	struct timeval timeout;
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 50000;
+
+	// Wait for all packets to be acknowledged
+	while (send_base < next_seqno)
+	{
+		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+		if (activity < 0)
+		{
+			if (errno == EINTR)
+			{
+				// Interrupted by a signal such as the retransmission (e.g., SIGALRM), retry select
+				continue;
+			}
+			else
+			{
+				perror("select failed");
+				exit(EXIT_FAILURE);
+			}
+		}
+
+		if (activity > 0 && FD_ISSET(sockfd, &readfds))
+		{
+			// Wait for any ACKs
+			if (recvfrom(sockfd, buffer, MSS_SIZE, 0,
+						 (struct sockaddr *)&serveraddr, &serverlen) < 0)
+			{
+				error("recvfrom failed");
+			}
+
+			tcp_packet *ack_pkt = (tcp_packet *)buffer;
+			if (ack_pkt->hdr.ackno > send_base)
+			{
+				process_ack(ack_pkt);
+			}
+		}
+	}
+
+	// Stop timer as all packets have been acknowledged
+	stop_timer(false);
+
+	// Send EOF packet only after all data is acknowledged
+	VLOG(INFO, "All packets acknowledged, starting EOF handshake");
+
+	tcp_packet *eof_pkt = make_packet(0); // Create EOF packet
+	eof_pkt->hdr.seqno = next_seqno;	  // Assign sequence number
+	eof_pkt->hdr.ctr_flags = 0x02;		  // Set FIN flag
+
+	// Loop max_attempts to send the EOF packet if not confirmed
+	int max_attempts = 3; 
+	int attempts = 0;
+	while (attempts < max_attempts)
+	{
+		// Send EOF packet
+		sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0, (const struct sockaddr *)&serveraddr, serverlen);
+
+		VLOG(DEBUG, "EOF packet %d sent, waiting for acknowledgment", eof_pkt->hdr.seqno);
+
+		// Wait for ACK with timeout
+		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
+
+		if (activity > 0)
+		{
+			// Process final ACK
+			if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) > 0)
+			{
+				tcp_packet *ack_pkt = (tcp_packet *)buffer;
+
+				if (ack_pkt->hdr.ctr_flags == ACK && ack_pkt->hdr.ackno == next_seqno)
+				{
+					VLOG(INFO, "EOF acknowledgment received, sender terminating.");
+					break;
+				}
+			}
+		}
+		else
+		{
+			VLOG(INFO, "EOF acknowledgment not received, retransmitting EOF");
+		}
+
+		attempts++;
+	}
+
+	if (attempts == max_attempts)
+	{
+		VLOG(DEBUG, "Failed to receive EOF acknowledgment after multiple attempts, sender terminating.");
+	}
+
+	free(eof_pkt); 	// Clean up EOF packet
+}
+
 // MAIN FUNCTION -----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–---
 int main(int argc, char **argv)
 {
@@ -585,8 +691,8 @@ int main(int argc, char **argv)
 			process_ack(ack_pkt);
 
 			// Log new window state
-			VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | cwnd_slots: %d",
-				 send_base, next_seqno, len, (int)floor(cwnd));
+			VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | cwnd_slots: %d",
+				 send_base, next_seqno, (int)floor(cwnd));
 		}
 
 		// If the window is not full, send more packets
@@ -603,81 +709,8 @@ int main(int argc, char **argv)
 				// If  EOF (completed sending all the data successfully:
 				if (feof(fp))
 				{
-					printf("\n");
-					VLOG(INFO, "End Of File has been reached");
-
-					// Wait for all packets to be acknowledged
-					while (send_base < next_seqno)
-					{
-						fd_set readfds;
-						FD_ZERO(&readfds);
-						FD_SET(sockfd, &readfds);
-
-						// Wait for any ACKs
-						if (recvfrom(sockfd, buffer, MSS_SIZE, 0,
-									 (struct sockaddr *)&serveraddr, &serverlen) < 0)
-						{
-							error("recvfrom failed");
-						}
-						tcp_packet *ack_pkt = (tcp_packet *)buffer;
-						if (ack_pkt->hdr.ackno > send_base)
-						{
-							process_ack(ack_pkt);
-						}
-					}
-
-					// Stop timer as all packets have been acknowledged
-					stop_timer(false);
-
-					// Send EOF packet only after all data is acknowledged
-					VLOG(INFO, "All packets acknowledged, starting EOF handshake");
-
-					tcp_packet *eof_pkt = make_packet(0); // Create EOF packet
-					eof_pkt->hdr.seqno = next_seqno;	  // Assign sequence number
-					eof_pkt->hdr.ctr_flags = 0x02;		  // Set FIN flag
-
-					int max_attempts = 3; // Retry sending EOF 3 times
-					int attempts = 0;
-					while (attempts < max_attempts)
-					{
-						// Send EOF packet
-						sendto(sockfd, eof_pkt, TCP_HDR_SIZE, 0, (const struct sockaddr *)&serveraddr, serverlen);
-
-						VLOG(DEBUG, "EOF packet %d sent, waiting for acknowledgment", eof_pkt->hdr.seqno);
-
-						// Wait for ACK with timeout
-						int rv = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
-
-						if (rv > 0)
-						{
-							// Process final ACK
-							if (recvfrom(sockfd, buffer, MSS_SIZE, 0, (struct sockaddr *)&serveraddr, &serverlen) > 0)
-							{
-								tcp_packet *ack_pkt = (tcp_packet *)buffer;
-
-								if (ack_pkt->hdr.ctr_flags == ACK && ack_pkt->hdr.ackno == next_seqno)
-								{
-									VLOG(INFO, "EOF acknowledgment received, sender terminating.");
-									break;
-								}
-							}
-						}
-						else
-						{
-							VLOG(INFO, "EOF acknowledgment not received, retransmitting EOF");
-						}
-
-						attempts++;
-					}
-
-					if (attempts == max_attempts)
-					{
-						VLOG(DEBUG, "Failed to receive EOF acknowledgment after multiple attempts, sender terminating.");
-					}
-
-					free(eof_pkt); // Clean up EOF packet
-					fclose(fp);	   // Close file
-					return 0;
+					initiate_eof_handshake(fp, buffer);
+					break;
 				}
 				error("Error reading from file");
 			}
