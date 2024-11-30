@@ -26,7 +26,7 @@ Key features:
 #include "common.h"
 #include "packet.h"
 
-#define WINDOW_SIZE 4 // Keep the window size <= max seq. no / 2
+#define BUFFER_SIZE 64 // Keep the large enough for multiple packets (max congestion size = 64)
 
 // Structures: --------------------------------------------------------------------------------------------------------------------------------------------------------------
 // Structure to represent a slot in the receiver's buffer
@@ -43,7 +43,7 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
 void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, socklen_t addr_len);
 
 // Global variables -----------------------------------------------------------------------------------------------------------------------------------------------------------
-receiver_buffer_slot receiver_buffer[WINDOW_SIZE]; // Circular buffer for out-of-order packets
+receiver_buffer_slot receiver_buffer[BUFFER_SIZE]; // Circular buffer for out-of-order packets
 int rcv_base = 0;								   // Base sequence number - next expected in-order packet
 int highest_seqno = 0;							   // Highest sequence number seen so far
 
@@ -52,7 +52,7 @@ int highest_seqno = 0;							   // Highest sequence number seen so far
 // Initialize the receiver's circular buffer. Sets all slots to empty (NULL packet pointer and invalid flag)
 void init_receiver_buffer()
 {
-	for (int i = 0; i < WINDOW_SIZE; i++)
+	for (int i = 0; i < BUFFER_SIZE; i++)
 	{
 		receiver_buffer[i].packet = NULL;		// No packet
 		receiver_buffer[i].is_buffered = false; // Slot is empty
@@ -62,7 +62,7 @@ void init_receiver_buffer()
 // Calculate the buffer slot for a given sequence number
 int get_buffer_slot(int seqno)
 {
-	return (seqno / DATA_SIZE) % WINDOW_SIZE;
+	return (seqno / DATA_SIZE) % BUFFER_SIZE;
 }
 
 // Send an acknowledgment packet back to the sender
@@ -105,7 +105,7 @@ void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, so
 		int slot = get_buffer_slot(rcv_base);
 
 		// Stop if we find a packet that is not buffered
-		if (!receiver_buffer[slot].is_buffered)
+		if (!receiver_buffer[slot].is_buffered || receiver_buffer[slot].packet->hdr.seqno != rcv_base)
 		{
 			break;
 		}

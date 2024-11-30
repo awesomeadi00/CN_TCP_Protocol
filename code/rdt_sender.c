@@ -121,7 +121,7 @@ void init_sender_window()
 // Calculate buffer slot for a sequence number and implements circular buffer using modulo operation
 int get_window_slot(int seqno)
 {
-	return (seqno / DATA_SIZE) % (int)floor(cwnd);
+	return (seqno / DATA_SIZE) % MAX_WINDOW_SIZE;
 }
 
 // Check if sending window is full. Window is full if distance between next_seqno and send_base equals floor of the CWND
@@ -413,7 +413,6 @@ void process_ack(tcp_packet *ack_pkt)
 	if (sender_window[slot].packet != NULL)
 	{
 		data_len = get_data_size(sender_window[slot].packet);
-		VLOG(DEBUG, "- - Data Length: %d", data_len);
 	}
 
 	// Handle cumulative ACK
