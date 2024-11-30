@@ -121,14 +121,13 @@ void init_sender_window()
 // Calculate buffer slot for a sequence number and implements circular buffer using modulo operation
 int get_window_slot(int seqno)
 {
-	return (seqno / DATA_SIZE) % MAX_WINDOW_SIZE;
+	return (seqno / DATA_SIZE) % (int)floor(cwnd);
 }
 
 // Check if sending window is full. Window is full if distance between next_seqno and send_base equals floor of the CWND
 bool window_is_full()
 {
-	int packets_to_send = (int)floor(cwnd); // Number of packets allowed by cwnd
-	if (next_seqno >= send_base + (packets_to_send * DATA_SIZE))
+	if (next_seqno >= send_base + ((int)floor(cwnd) * DATA_SIZE))
 	{
 		return true;
 	}
@@ -142,9 +141,10 @@ bool is_valid_window_state()
 	if (next_seqno < send_base)
 		return false;
 
-	// The packet cannot exceed the CWND range
-	if (next_seqno - send_base > (int)floor(cwnd) * DATA_SIZE)
+	// The packet cannot exceed the entire window range
+	if (next_seqno - send_base > MAX_WINDOW_SIZE * DATA_SIZE)
 		return false;
+
 	return true;
 }
 
@@ -288,7 +288,7 @@ void update_rtt_and_rto(struct timeval sent_time, bool is_retransmitted)
 	// Apply Karn's Algorithm: ignore RTT for retransmitted packets
 	if (is_retransmitted)
 	{
-		VLOG(DEBUG, "Skipping RTT update for retransmitted packet.");
+		VLOG(DEBUG, "- RTT/RTO Update: Skipping RTT update for retransmitted packet.");
 		return;
 	}
 
@@ -343,6 +343,8 @@ void send_packet(int slot)
 		error("sendto failed");
 	}
 
+	VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
+
 	// Update packet state
 	sender_window[slot].is_sent = true;
 	gettimeofday(&sender_window[slot].sent_time, NULL);
@@ -352,8 +354,6 @@ void send_packet(int slot)
 	{
 		start_timer(false);
 	}
-
-	VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
 }
 
 // Function to process received ACKS
@@ -372,22 +372,6 @@ void process_ack(tcp_packet *ack_pkt)
 
 	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
 	VLOG(DEBUG, "Recieved ACK %d", ack_no);
-
-	// Prevent some sort of race condition
-	// stop_timer();
-
-	// When a new ACK comes in:
-	// - Reset consecutive_timeouts to zero and update the timer
-	// - Update RTT and RTO Values
-	// - Gradually update the CWND value
-	if (ack_no >= send_base)
-	{
-		int slot = get_window_slot(ack_no);
-		consecutive_timeouts = 0;
-		update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
-		update_cwnd(time(NULL));
-		reset_timer();
-	}
 
 	// If we receive an ack which is below the base (Duplicate ACK)
 	if (ack_no < send_base)
@@ -413,11 +397,22 @@ void process_ack(tcp_packet *ack_pkt)
 		return; // No further processing needed for duplicate ACK
 	}
 
+	// Otherwise this is a regular ontime ACK hence we will:
+	// - Reset consecutive_timeouts to zero and update the timer
+	// - Update RTT and RTO Values
+	// - Gradually update the CWND value
+	// - Clear window slot buffers
+	// - Advance sliding window
+	int slot = get_window_slot(ack_no);
+	consecutive_timeouts = 0;
+	update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
+	update_cwnd(time(NULL));
+
 	// Determine the size of the last acknowledged packet before freeing it
 	int data_len = 0;
-	if (sender_window[get_window_slot(ack_no)].packet != NULL)
+	if (sender_window[slot].packet != NULL)
 	{
-		data_len = get_data_size(sender_window[get_window_slot(ack_no)].packet);
+		data_len = get_data_size(sender_window[slot].packet);
 	}
 
 	// Handle cumulative ACK
@@ -440,17 +435,8 @@ void process_ack(tcp_packet *ack_pkt)
 	send_base = ack_no + data_len;
 	VLOG(DEBUG, "Advanced send_base to %d", send_base);
 
-	// This is when all packets have been acknowledged (base has caught up to next_seqno)
-	if (send_base == next_seqno)
-	{
-		stop_timer(false);
-	}
-
 	// Restart timer for remaining unacknowledged packets
-	else
-	{
-		reset_timer();
-	}
+	reset_timer();
 }
 
 // Resend packets: occurs when timeout occurs based on RTO
@@ -459,7 +445,7 @@ void resend_packets(int sig)
 {
 	if (sig == SIGALRM)
 	{
-		reset_congestion_control();
+		printf("\n");
 
 		// Exponential backoff: Exponential double of RTO when timouts occur (with a ceiling of 240)
 		consecutive_timeouts++;
@@ -467,6 +453,7 @@ void resend_packets(int sig)
 
 		VLOG(INFO, "Timeout occurred for packet: %d, retransmitting packet. New RTO: %.3f", send_base, rto);
 
+		// First resend all the packets from the current CWND before resetting it. 
 		for (int i = 0; i < (int)floor(cwnd); i++)
 		{
 			int seqno = send_base + i * DATA_SIZE; // Calculate the sequence number for this slot
@@ -489,6 +476,9 @@ void resend_packets(int sig)
 				VLOG(DEBUG, "Retransmitted packet %d", seqno);
 			}
 		}
+
+		// Reset congestion values (CWND and SSTRESH)
+		reset_congestion_control();
 
 		// Reset the timer after retransmitting all unacknowledged packets
 		reset_timer();
@@ -644,6 +634,9 @@ int main(int argc, char **argv)
 						}
 					}
 
+					// Stop timer as all packets have been acknowledged
+					stop_timer(false);
+
 					// Send EOF packet only after all data is acknowledged
 					VLOG(INFO, "All packets acknowledged, starting EOF handshake");
 
@@ -736,7 +729,7 @@ int main(int argc, char **argv)
 		{
 			// Just to avoid it printing over and over again.
 			if(!window_full_gate) {
-				VLOG(DEBUG, "Window Status: FULL");
+				VLOG(DEBUG, "Window Status: FULL - Cannot send more packets");
 				window_full_gate = true;
 			}
 			
