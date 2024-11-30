@@ -118,7 +118,7 @@ void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, so
 			   1, receiver_buffer[slot].packet->hdr.data_size, fp);
 
 		// Send the ACK for the processed buffered packet
-		send_ack(sockfd, receiver_buffer[slot].packet->hdr.ackno, addr, addr_len);
+		send_ack(sockfd, receiver_buffer[slot].packet->hdr.seqno, addr, addr_len);
 
 		// Update rcv_base to next expected sequence number
 		rcv_base += receiver_buffer[slot].packet -> hdr.data_size;

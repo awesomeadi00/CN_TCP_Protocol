@@ -413,6 +413,7 @@ void process_ack(tcp_packet *ack_pkt)
 	if (sender_window[slot].packet != NULL)
 	{
 		data_len = get_data_size(sender_window[slot].packet);
+		VLOG(DEBUG, "- - Data Length: %d", data_len);
 	}
 
 	// Handle cumulative ACK
@@ -426,6 +427,7 @@ void process_ack(tcp_packet *ack_pkt)
 		{
 			free(sender_window[slot].packet);
 			sender_window[slot].packet = NULL;
+			sender_window[slot].is_sent = false;
 			sender_window[slot].is_acked = true;
 			sender_window[slot].is_retransmitted = false;
 		}
@@ -451,30 +453,23 @@ void resend_packets(int sig)
 		consecutive_timeouts++;
 		rto = fmin(rto * pow(2, consecutive_timeouts), 240.0);
 
-		VLOG(INFO, "Timeout occurred for packet: %d, retransmitting packet. New RTO: %.3f", send_base, rto);
+		VLOG(INFO, "Timeout occurred for packet: %d. New RTO: %.3f", send_base, rto);
 
-		// First resend all the packets from the current CWND before resetting it. 
-		for (int i = 0; i < (int)floor(cwnd); i++)
+		// Only retransmit the packet that was timed out (not the whole window - according to project description)
+		int slot = get_window_slot(send_base);
+		if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
 		{
-			int seqno = send_base + i * DATA_SIZE; // Calculate the sequence number for this slot
-			if (seqno >= next_seqno)			   // Stop if we have iterated beyond the last sent packet
-				break;
-
-			int slot = get_window_slot(seqno);
-			if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
+			// Retransmit the unacknowledged packet
+			if (sendto(sockfd, sender_window[slot].packet,
+						TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+						(const struct sockaddr *)&serveraddr, serverlen) < 0)
 			{
-				// Retransmit the unacknowledged packet
-				if (sendto(sockfd, sender_window[slot].packet,
-						   TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-						   (const struct sockaddr *)&serveraddr, serverlen) < 0)
-				{
-					error("sendto failed during retransmission");
-				}
-				sender_window[slot].is_retransmitted = true;
-
-				gettimeofday(&sender_window[slot].sent_time, NULL);
-				VLOG(DEBUG, "Retransmitted packet %d", seqno);
+				error("sendto failed during retransmission");
 			}
+			sender_window[slot].is_retransmitted = true;
+
+			gettimeofday(&sender_window[slot].sent_time, NULL);
+			VLOG(DEBUG, "Retransmitted packet %d", send_base);
 		}
 
 		// Reset congestion values (CWND and SSTRESH)
@@ -558,7 +553,6 @@ int main(int argc, char **argv)
 		struct timeval timeout;
 		timeout.tv_sec = 0;
 		timeout.tv_usec = 50000;
-		int no_of_slots_left;
 
 		// Monitor socket for incoming ACKs
 		FD_ZERO(&readfds);
@@ -590,11 +584,10 @@ int main(int argc, char **argv)
 
 			tcp_packet *ack_pkt = (tcp_packet *)buffer;
 			process_ack(ack_pkt);
-			no_of_slots_left = (int)floor(cwnd) - ((next_seqno - send_base) / DATA_SIZE);
 
 			// Log new window state
-			VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | no_of_slots_left: %d",
-				 send_base, next_seqno, len, no_of_slots_left);
+			VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | cwnd_slots: %d",
+				 send_base, next_seqno, len, (int)floor(cwnd));
 		}
 
 		// If the window is not full, send more packets
@@ -718,10 +711,9 @@ int main(int argc, char **argv)
 
 				// Update sequence number by len as packets are varied in size hence this will account for packet size transfer
 				next_seqno += len;
-				no_of_slots_left = (int)floor(cwnd) - ((next_seqno - send_base) / DATA_SIZE);
 
-				VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | no_of_slots_left: %d",
-					 send_base, next_seqno, len, no_of_slots_left);
+				VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | cwnd_slots: %d",
+					 send_base, next_seqno, len, (int)floor(cwnd));
 			}
 		}
 
