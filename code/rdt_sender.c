@@ -28,26 +28,25 @@ Key features:
 #include "common.h"
 
 // Constants
-#define STDIN_FD 0          	// Standard input file descriptor
-#define MAX_WINDOW_SIZE 64		// Maximum size of sliding window (64)
+#define STDIN_FD 0		   // Standard input file descriptor
+#define MAX_WINDOW_SIZE 64 // Maximum size of sliding window (64)
 
 // Structures: --------------------------------------------------------------------------------------------------------------------------------------------------------------
 // The sender window and its features
 typedef struct
 {
-	tcp_packet *packet;   		// Pointer to actual packet data
-	bool is_sent;         		// Flag indicating if packet has been sent
-	bool is_acked;        		// Flag indicating if packet has been acknowledged
-	bool is_retransmitted;		// Flag indicating if the packet has been retransmitted
-	struct timeval sent_time; 	// Time when packet was last sent
+	tcp_packet *packet;		  // Pointer to actual packet data
+	bool is_sent;			  // Flag indicating if packet has been sent
+	bool is_acked;			  // Flag indicating if packet has been acknowledged
+	bool is_retransmitted;	  // Flag indicating if the packet has been retransmitted
+	struct timeval sent_time; // Time when packet was last sent
 } window_slot;
-
 
 // Structure to track duplicate acknowledgments (implemented for fast-tracking)
 struct
 {
 	int ack_number; // ACK number being tracked
-	int count;  	// Number of times this ACK has been received
+	int count;		// Number of times this ACK has been received
 } dup_ack_tracker;
 
 // Function declarations ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -75,22 +74,22 @@ void resend_packets(int sig);
 
 // Global variables -----------------------------------------------------------------------------------------------------------------------------------------------------------
 window_slot sender_window[MAX_WINDOW_SIZE]; // Array of window slots
-int send_base = 0;                  		// First unacked packet sequence number
-int next_seqno = 0;                 		// Next sequence number to use
-int sockfd;                         		// Socket file descriptor
-socklen_t serverlen;                		// Length of server address
-struct sockaddr_in serveraddr;      		// Server address structure
-struct itimerval timer;             		// Timer for packet retransmission
-sigset_t sigmask;                   		// Signal mask for timer management
-bool timer_running = false;         		// Flag to track timer state
+int send_base = 0;							// First unacked packet sequence number
+int next_seqno = 0;							// Next sequence number to use
+int sockfd;									// Socket file descriptor
+socklen_t serverlen;						// Length of server address
+struct sockaddr_in serveraddr;				// Server address structure
+struct itimerval timer;						// Timer for packet retransmission
+sigset_t sigmask;							// Signal mask for timer management
+bool timer_running = false;					// Flag to track timer state
 
 // Global variables for RTO and RTT calculations:
-float wrtt = 0.0;			  				// Weighted average of RTT values (wrtt = (1-alpha) * wrtt + (alpha * sample_rtt))
-float devrtt = 0.0;			  				// Deviation in RTT (devrtt = (1-beta) * devrtt + beta * |wrtt - sample_rtt|)
-float alpha = 0.125;		  				// Coefficient for weighted average RTT
-float beta = 0.25;			  				// Coefficient for deviation in RTT
-float rto = 3.0;							// Retransmission Timeout (RTO), initialized to 3 seconds
-int consecutive_timeouts = 0; 				// Counter for exponential backoff
+float wrtt = 0.0;			  // Weighted average of RTT values (wrtt = (1-alpha) * wrtt + (alpha * sample_rtt))
+float devrtt = 0.0;			  // Deviation in RTT (devrtt = (1-beta) * devrtt + beta * |wrtt - sample_rtt|)
+float alpha = 0.125;		  // Coefficient for weighted average RTT
+float beta = 0.25;			  // Coefficient for deviation in RTT
+float rto = 3.0;			  // Retransmission Timeout (RTO), initialized to 3 seconds
+int consecutive_timeouts = 0; // Counter for exponential backoff
 
 // Global variables for Congestion Control:
 // Congestion Control State to determine whether we are in Slow start or Congestion Avoidance
@@ -101,9 +100,9 @@ typedef enum
 } CongestionControlState;
 CongestionControlState congestionState = SLOW_START;
 
-float cwnd = 1.0;	   						// Congestion window (set to 1 packet initially)
-float ssthresh = 64.0; 						// Slow-start threshold (set to 64 initially)
-FILE *cwnd_log;		   						// CSV File for logging CWND
+float cwnd = 1.0;	   // Congestion window (set to 1 packet initially)
+float ssthresh = 64.0; // Slow-start threshold (set to 64 initially)
+FILE *cwnd_log;		   // CSV File for logging CWND
 
 // Window Related Helper Functions ------------------------------------------------------------------------------------------------------------------------------------------------
 // Initialize the sender's window buffer and sets all slots to empty state
@@ -111,9 +110,9 @@ void init_sender_window()
 {
 	for (int i = 0; i < MAX_WINDOW_SIZE; i++)
 	{
-    	sender_window[i].packet = NULL;
-    	sender_window[i].is_sent = false;
-    	sender_window[i].is_acked = false;
+		sender_window[i].packet = NULL;
+		sender_window[i].is_sent = false;
+		sender_window[i].is_acked = false;
 		sender_window[i].is_retransmitted = false;
 	}
 }
@@ -152,9 +151,10 @@ bool is_valid_window_state()
 // Log CWND to CSV file
 void log_cwnd(float time)
 {
+	// Logging it as TIME, CWND, SSTRESH on the CSV file
 	if (cwnd_log != NULL)
 	{
-		fprintf(cwnd_log, "%.3f,%.3f\n", time, cwnd);
+		fprintf(cwnd_log, "%.3f,%.3f,%d\n", time, cwnd, (int)ssthresh);
 		fflush(cwnd_log);
 	}
 }
@@ -162,12 +162,11 @@ void log_cwnd(float time)
 // Initialize CWND logging
 void init_cwnd_log()
 {
-	cwnd_log = fopen("CWND.csv", "w");
+	cwnd_log = fopen("../CWND.csv", "w");
 	if (cwnd_log == NULL)
 	{
 		error("Failed to create CWND.csv");
 	}
-	fprintf(cwnd_log, "Time,CWND\n");
 }
 
 // Close CWND logging
@@ -190,7 +189,7 @@ void update_cwnd(float time)
 		// If the window is more than the ssthresh, then we can switch to congestion avoidance.
 		if (cwnd >= ssthresh)
 		{
-			congestionState = CONGESTION_AVOIDANCE; 
+			congestionState = CONGESTION_AVOIDANCE;
 			VLOG(INFO, "- Congestion Update: Switching to Congestion Avoidance");
 		}
 	}
@@ -251,9 +250,9 @@ void start_timer()
 {
 	if (!timer_running)
 	{
-    	sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
-    	setitimer(ITIMER_REAL, &timer, NULL);
-    	timer_running = true;
+		sigprocmask(SIG_UNBLOCK, &sigmask, NULL);
+		setitimer(ITIMER_REAL, &timer, NULL);
+		timer_running = true;
 	}
 }
 
@@ -262,8 +261,8 @@ void stop_timer()
 {
 	if (timer_running)
 	{
-    	sigprocmask(SIG_BLOCK, &sigmask, NULL);
-    	timer_running = false;
+		sigprocmask(SIG_BLOCK, &sigmask, NULL);
+		timer_running = false;
 	}
 }
 
@@ -349,7 +348,6 @@ void send_packet(int slot)
 	VLOG(DEBUG, "Sent packet %d to %s", sender_window[slot].packet->hdr.seqno, inet_ntoa(serveraddr.sin_addr));
 }
 
-
 // Function to process received ACKS
 /*
  * Handles:
@@ -368,19 +366,18 @@ void process_ack(tcp_packet *ack_pkt)
 	// Prevent some sort of race condition
 	stop_timer();
 
-	// When a new ACK comes in: 
+	// When a new ACK comes in:
 	// - Reset consecutive_timeouts to zero and update the timer
 	// - Update RTT and RTO Values
 	// - Gradually update the CWND value
 	if (ack_no >= send_base)
 	{
 		int slot = get_window_slot(ack_no);
-		consecutive_timeouts = 0; 
+		consecutive_timeouts = 0;
 		update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
-		update_cwnd(time(NULL)); 
+		update_cwnd(time(NULL));
 		reset_timer();
 	}
-
 
 	// If we receive an ack which is below the base (Duplicate ACK)
 	if (ack_no < send_base)
@@ -436,13 +433,13 @@ void process_ack(tcp_packet *ack_pkt)
 	// This is when all packets have been acknowledged (base has caught up to next_seqno)
 	if (send_base == next_seqno)
 	{
-		stop_timer(); 
+		stop_timer();
 	}
 
 	// Restart timer for remaining unacknowledged packets
 	else
 	{
-		reset_timer(); 
+		reset_timer();
 	}
 }
 
@@ -452,39 +449,39 @@ void resend_packets(int sig)
 {
 	if (sig == SIGALRM)
 	{
-		reset_congestion_control(); 
+		reset_congestion_control();
 
 		// Exponential backoff: Exponential double of RTO when timouts occur (with a ceiling of 240)
 		consecutive_timeouts++;
-		rto = fmin(rto * pow(2, consecutive_timeouts), 240.0); 
+		rto = fmin(rto * pow(2, consecutive_timeouts), 240.0);
 
 		VLOG(INFO, "Timeout occurred for packet: %d, retransmitting packet. New RTO: %.3f", send_base, rto);
 
-    	for (int i = 0; i < (int)floor(cwnd); i++)
-    	{
-        	int seqno = send_base + i * DATA_SIZE; 	// Calculate the sequence number for this slot
-        	if (seqno >= next_seqno)           		// Stop if we have iterated beyond the last sent packet
-            	break;
+		for (int i = 0; i < (int)floor(cwnd); i++)
+		{
+			int seqno = send_base + i * DATA_SIZE; // Calculate the sequence number for this slot
+			if (seqno >= next_seqno)			   // Stop if we have iterated beyond the last sent packet
+				break;
 
-        	int slot = get_window_slot(seqno);
-        	if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
-        	{				
-            	// Retransmit the unacknowledged packet
-            	if (sendto(sockfd, sender_window[slot].packet,
-                       	TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
-                       	(const struct sockaddr *)&serveraddr, serverlen) < 0)
-            	{
-                	error("sendto failed during retransmission");
-            	}
+			int slot = get_window_slot(seqno);
+			if (sender_window[slot].packet != NULL && !sender_window[slot].is_acked)
+			{
+				// Retransmit the unacknowledged packet
+				if (sendto(sockfd, sender_window[slot].packet,
+						   TCP_HDR_SIZE + get_data_size(sender_window[slot].packet), 0,
+						   (const struct sockaddr *)&serveraddr, serverlen) < 0)
+				{
+					error("sendto failed during retransmission");
+				}
 				sender_window[slot].is_retransmitted = true;
 
 				gettimeofday(&sender_window[slot].sent_time, NULL);
-            	VLOG(DEBUG, "Retransmitted packet %d", seqno);
-        	}
-    	}
+				VLOG(DEBUG, "Retransmitted packet %d", seqno);
+			}
+		}
 
-    	// Reset the timer after retransmitting all unacknowledged packets
-    	reset_timer();
+		// Reset the timer after retransmitting all unacknowledged packets
+		reset_timer();
 	}
 }
 
@@ -497,23 +494,25 @@ int main(int argc, char **argv)
 	FILE *fp;
 	int len;
 
-	// Check command line arguments 
-	if (argc != 4) {
-    	fprintf(stderr, "usage: %s <hostname> <port> <FILE>\n", argv[0]);
-    	exit(1);
+	// Check command line arguments
+	if (argc != 4)
+	{
+		fprintf(stderr, "usage: %s <hostname> <port> <FILE>\n", argv[0]);
+		exit(1);
 	}
-    
+
 	hostname = argv[1];
 	portno = atoi(argv[2]);
 	fp = fopen(argv[3], "r");
-	if (fp == NULL) {
-    	error(argv[3]);
+	if (fp == NULL)
+	{
+		error(argv[3]);
 	}
 
 	// Socket: create the socket
 	sockfd = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sockfd < 0)
-    	error("ERROR opening socket");
+		error("ERROR opening socket");
 
 	// Iitialize server server details
 	bzero((char *)&serveraddr, sizeof(serveraddr));
@@ -522,8 +521,8 @@ int main(int argc, char **argv)
 	// Covert host into network byte order
 	if (inet_aton(hostname, &serveraddr.sin_addr) == 0)
 	{
-    	fprintf(stderr, "ERROR, invalid host %s\n", hostname);
-    	exit(0);
+		fprintf(stderr, "ERROR, invalid host %s\n", hostname);
+		exit(0);
 	}
 
 	// Build the server's internet address
@@ -548,23 +547,24 @@ int main(int argc, char **argv)
 	while (1)
 	{
 		printf("\n");
-		
-		// Clean up and exit if invalid window state detected
-		if (!is_valid_window_state()) {
-        	VLOG(INFO, "Invalid window state detected: send_base = %d next_seqno = %d", send_base, next_seqno);
-        	fclose(fp);
-        	return -1;  // Return with error
-    	}
 
-    	fd_set readfds;
+		// Clean up and exit if invalid window state detected
+		if (!is_valid_window_state())
+		{
+			VLOG(INFO, "Invalid window state detected: send_base = %d next_seqno = %d", send_base, next_seqno);
+			fclose(fp);
+			return -1; // Return with error
+		}
+
+		fd_set readfds;
 		struct timeval timeout;
 		timeout.tv_sec = 0;
-		timeout.tv_usec = 50000; 
+		timeout.tv_usec = 50000;
 		int no_of_slots_left;
 
 		// Monitor socket for incoming ACKs
 		FD_ZERO(&readfds);
-    	FD_SET(sockfd, &readfds);
+		FD_SET(sockfd, &readfds);
 
 		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 		if (activity < 0)
@@ -600,34 +600,39 @@ int main(int argc, char **argv)
 		}
 
 		// If the window is not full, send more packets
-    	if (!window_is_full())
-    	{
-        	// Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
-        	len = fread(buffer, 1, DATA_SIZE, fp);
+		if (!window_is_full())
+		{
+			// Read up to DATA_SIZE bytes from the file pointed to by fp into the buffer.
+			len = fread(buffer, 1, DATA_SIZE, fp);
 
 			// If it len <= 0 then it means either it reached (EOF) or encounters an error.
-        	if (len <= 0) {
+			if (len <= 0)
+			{
 				// If  EOF (completed sending all the data successfully:
-				if (feof(fp)) {
+				if (feof(fp))
+				{
 					printf("\n");
 					VLOG(INFO, "End Of File has been reached");
 
 					// Wait for all packets to be acknowledged
-                	while (send_base < next_seqno) {
-                    	fd_set readfds;
+					while (send_base < next_seqno)
+					{
+						fd_set readfds;
 						FD_ZERO(&readfds);
-                    	FD_SET(sockfd, &readfds);
+						FD_SET(sockfd, &readfds);
 
 						// Wait for any ACKs
 						if (recvfrom(sockfd, buffer, MSS_SIZE, 0,
-							(struct sockaddr *)&serveraddr, &serverlen) < 0) {
+									 (struct sockaddr *)&serveraddr, &serverlen) < 0)
+						{
 							error("recvfrom failed");
 						}
 						tcp_packet *ack_pkt = (tcp_packet *)buffer;
-						if (ack_pkt->hdr.ackno > send_base) {
+						if (ack_pkt->hdr.ackno > send_base)
+						{
 							process_ack(ack_pkt);
 						}
-                	}
+					}
 
 					// Send EOF packet only after all data is acknowledged
 					VLOG(INFO, "All packets acknowledged, starting EOF handshake");
@@ -680,36 +685,36 @@ int main(int argc, char **argv)
 					return 0;
 				}
 				error("Error reading from file");
-        	}
+			}
 
-        	// Otherwise, we will continue to prepare and send more packets within the window
-        	else
-        	{
-            	// Get the slot number within the window for the packet
-            	int slot = get_window_slot(next_seqno);
+			// Otherwise, we will continue to prepare and send more packets within the window
+			else
+			{
+				// Get the slot number within the window for the packet
+				int slot = get_window_slot(next_seqno);
 
-            	// Clean up old packet if it exists
-            	if (sender_window[slot].packet != NULL)
-            	{
-                	free(sender_window[slot].packet);
-            	}
+				// Clean up old packet if it exists
+				if (sender_window[slot].packet != NULL)
+				{
+					free(sender_window[slot].packet);
+				}
 
-            	// Create new packet based on the size of the data payload (len)
-            	sender_window[slot].packet = make_packet(len);
-            	if (sender_window[slot].packet == NULL)
-            	{
-                	error("Failed to create packet");
-            	}
+				// Create new packet based on the size of the data payload (len)
+				sender_window[slot].packet = make_packet(len);
+				if (sender_window[slot].packet == NULL)
+				{
+					error("Failed to create packet");
+				}
 
-            	// Assign sequence number to the packet
-            	memcpy(sender_window[slot].packet->data, buffer, len);
-            	sender_window[slot].packet->hdr.seqno = next_seqno;
+				// Assign sequence number to the packet
+				memcpy(sender_window[slot].packet->data, buffer, len);
+				sender_window[slot].packet->hdr.seqno = next_seqno;
 
-            	// Send packet
-            	send_packet(slot);
+				// Send packet
+				send_packet(slot);
 
-            	// Update sequence number by len as packets are varied in size hence this will account for packet size transfer
-            	next_seqno += len;
+				// Update sequence number by len as packets are varied in size hence this will account for packet size transfer
+				next_seqno += len;
 				no_of_slots_left = (int)floor(cwnd) - ((next_seqno - send_base) / DATA_SIZE);
 
 				VLOG(DEBUG, "Window Status: send_base = %d | next_seqno = %d | datasize = %d | no_of_slots_left: %d",
@@ -717,19 +722,20 @@ int main(int argc, char **argv)
 			}
 		}
 
-    	else {
+		else
+		{
 			VLOG(DEBUG, "Window Status: FULL");
-    	}
+		}
 	}
 
 	// Clean up any remaining packets in the window
 	for (int i = 0; i < MAX_WINDOW_SIZE; i++)
 	{
-    	if (sender_window[i].packet != NULL)
-    	{
-        	free(sender_window[i].packet);
-        	sender_window[i].packet = NULL;
-    	}
+		if (sender_window[i].packet != NULL)
+		{
+			free(sender_window[i].packet);
+			sender_window[i].packet = NULL;
+		}
 	}
 
 	// Close CWND logging file and cleanup
