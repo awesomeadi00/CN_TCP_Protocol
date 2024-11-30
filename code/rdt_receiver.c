@@ -28,27 +28,28 @@ Key features:
 
 #define WINDOW_SIZE 4 // Keep the window size <= max seq. no / 2
 
-/*
- * Structure to represent a slot in the receiver's buffer
- * Each slot can hold:
- * - A pointer to a TCP packet (NULL if empty)
- * - A flag indicating if the slot contains valid data
- */
+// Structures: --------------------------------------------------------------------------------------------------------------------------------------------------------------
+// Structure to represent a slot in the receiver's buffer
 typedef struct
 {
 	tcp_packet *packet; // Pointer to store the actual packet
 	bool is_buffered;	// Flag to track if slot contains valid data
 } receiver_buffer_slot;
 
-// Global variables for receiver state management
+// Function declarations ----------------------------------------------------------------------------------------------------------------------------------------------------
+void init_receiver_buffer();
+int get_buffer_slot(int seqno);
+void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_len);
+void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, socklen_t addr_len);
+
+// Global variables -----------------------------------------------------------------------------------------------------------------------------------------------------------
 receiver_buffer_slot receiver_buffer[WINDOW_SIZE]; // Circular buffer for out-of-order packets
 int rcv_base = 0;								   // Base sequence number - next expected in-order packet
 int highest_seqno = 0;							   // Highest sequence number seen so far
 
-/*
- * Initialize the receiver's circular buffer
- * Sets all slots to empty (NULL packet pointer and invalid flag)
- */
+// Receiver Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
+
+// Initialize the receiver's circular buffer. Sets all slots to empty (NULL packet pointer and invalid flag)
 void init_receiver_buffer()
 {
 	for (int i = 0; i < WINDOW_SIZE; i++)
@@ -58,19 +59,14 @@ void init_receiver_buffer()
 	}
 }
 
-/*
- * Calculate the buffer slot for a given sequence number
- * Uses modulo operation to implement circular buffer behavior
- * Returns: slot index in the buffer array
- */
+// Calculate the buffer slot for a given sequence number
 int get_buffer_slot(int seqno)
 {
 	return (seqno / DATA_SIZE) % WINDOW_SIZE;
 }
 
+// Send an acknowledgment packet back to the sender
 /*
- * Send an acknowledgment packet back to the sender
- *
  * Parameters:
  * sockfd: Socket descriptor for sending
  * ackno: Acknowledgment number (next expected sequence number)
@@ -101,12 +97,8 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
 	free(ack_pkt);
 }
 
-/*
- * Process packets that are ready to be delivered to the application
- * Writes consecutive packets to file starting from rcv_base
- * Stops when it encounters a gap in sequence numbers
- */
-void process_buffered_packets(FILE *fp)
+// Process packets that are in the buffer and ready to be delivered to the application
+void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, socklen_t addr_len)
 {
 	while (1)
 	{
@@ -125,8 +117,11 @@ void process_buffered_packets(FILE *fp)
 		fwrite(receiver_buffer[slot].packet->data,
 			   1, receiver_buffer[slot].packet->hdr.data_size, fp);
 
+		// Send the ACK for the processed buffered packet
+		send_ack(sockfd, receiver_buffer[slot].packet->hdr.ackno, addr, addr_len);
+
 		// Update rcv_base to next expected sequence number
-		rcv_base += receiver_buffer[slot].packet->hdr.data_size;
+		rcv_base += receiver_buffer[slot].packet -> hdr.data_size;
 
 		// Clean up the buffer slot
 		free(receiver_buffer[slot].packet);
@@ -135,15 +130,7 @@ void process_buffered_packets(FILE *fp)
 	}
 }
 
-/*
- * Main function implementing the receiver logic
- * Handles:
- * - Socket setup
- * - Packet reception
- * - Buffer management
- * - File writing
- * - ACK sending
- */
+// MAIN FUNCTION -----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–-----–---
 int main(int argc, char **argv)
 {
 	int sockfd;					   // Socket
@@ -225,8 +212,9 @@ int main(int argc, char **argv)
 			VLOG(INFO, "EOF Packet %d received. End of file has been reached", received_pkt->hdr.seqno);
 
 			// Process any remaining buffered packets
-			process_buffered_packets(fp);
+			process_buffered_packets(fp, sockfd, &clientaddr, clientlen);
 
+			// Send the final ACK 
 			send_ack(sockfd, received_pkt->hdr.seqno, &clientaddr, clientlen);
 
 			VLOG(INFO, "Final ACK sent, receiver terminating.");
@@ -268,7 +256,7 @@ int main(int argc, char **argv)
 			rcv_base += received_pkt->hdr.data_size;
 
 			// Check if we can now process any buffered packets
-			process_buffered_packets(fp);
+			process_buffered_packets(fp, sockfd, &clientaddr, clientlen);
 			VLOG(DEBUG, "Advanced rcv_base to %d", rcv_base);
 		}
 
