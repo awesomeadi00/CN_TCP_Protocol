@@ -55,10 +55,10 @@ int get_window_slot(int seqno);
 bool window_is_full();
 bool is_valid_window_state();
 
-void log_cwnd(float time);
+void log_cwnd(double time);
 void init_cwnd_log();
 void close_cwnd_log();
-void update_cwnd(float time);
+void update_cwnd(struct timeval current_time);
 void reset_congestion_control();
 void handle_fast_retransmit(int ack_no);
 
@@ -151,12 +151,12 @@ bool is_valid_window_state()
 
 // Congestion Control and CWND Logging Helper Functions: ---------------------------------------------------------------------------------------------------------------------------------------
 // Log CWND to CSV file
-void log_cwnd(float time)
+void log_cwnd(double time)
 {
 	// Logging it as TIME, CWND, SSTRESH on the CSV file
 	if (cwnd_log != NULL)
 	{
-		fprintf(cwnd_log, "%.3f,%.3f,%d\n", time, cwnd, (int)ssthresh);
+		fprintf(cwnd_log, "%.6f,%.6f,%d\n", time, cwnd, (int)ssthresh);
 		fflush(cwnd_log);
 	}
 }
@@ -181,8 +181,10 @@ void close_cwnd_log()
 }
 
 // Updates CWND based on ACK and depending on the congestion control state
-void update_cwnd(float time)
+void update_cwnd(struct timeval current_time)
 {
+	double timestamp = current_time.tv_sec + current_time.tv_usec / 1e6;
+
 	// If we are in slow start:
 	if (congestionState == SLOW_START)
 	{
@@ -203,7 +205,7 @@ void update_cwnd(float time)
 	}
 
 	VLOG(INFO, "- Congestion Update: CWND: %.3f, SSTRESH: %.3f", cwnd, ssthresh);
-	log_cwnd(time); // Log CWND
+	log_cwnd(timestamp); // Log CWND
 }
 
 // Handles congestion control reset under a timeout: Updates ssthresh value and CWND is reset
@@ -410,7 +412,11 @@ void process_ack(tcp_packet *ack_pkt)
 	int slot = get_window_slot(ack_no);
 	consecutive_timeouts = 0;
 	update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
-	update_cwnd(time(NULL));
+
+	// Get the current time for logging the updated CWND value
+	struct timeval current_time;
+	gettimeofday(&current_time, NULL);
+	update_cwnd(current_time);
 
 	// Determine the size of the last acknowledged packet before freeing it
 	int data_len = 0;
