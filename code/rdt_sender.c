@@ -225,11 +225,7 @@ void handle_fast_retransmit(int ack_no)
 	if (sender_window[slot].packet != NULL)
 	{
 		send_packet(slot);				// Retransmit
-		ssthresh = fmax(cwnd / 2, 2.0); // Adjust ssthresh
-		cwnd = 1.0;						// Reset CWND
-		congestionState = SLOW_START;	// Transition to Slow Start
-		VLOG(INFO, "- Congestion Update: Fast retransmit packet %d: CWND reset to %.3f, SSTHRESH set to %.3f", ack_no, cwnd, ssthresh);
-		VLOG(INFO, "- Congestion Update: Switching to Slow Start");
+		VLOG(INFO, "- Fast retransmit packet %d", ack_no);
 	}
 }
 
@@ -394,8 +390,8 @@ void process_ack(tcp_packet *ack_pkt)
 				// Reset CWND and SSTRESH due to triple duplicate ACK
 				reset_congestion_control();
 				
-				// Fast retransmit for the packet causing duplicate ACKs
-				handle_fast_retransmit(ack_no);
+				// Fast retransmit the lost packet
+				handle_fast_retransmit(send_base);
 				dup_ack_tracker.count = 0; // Reset duplicate ACK counter
 			}
 		}
@@ -512,6 +508,9 @@ void initiate_eof_handshake(FILE *fp, char *buffer)
 	// Wait for all packets to be acknowledged
 	while (send_base < next_seqno)
 	{
+		FD_ZERO(&readfds);
+		FD_SET(sockfd, &readfds);
+		
 		int activity = select(sockfd + 1, &readfds, NULL, NULL, &timeout);
 		if (activity < 0)
 		{
