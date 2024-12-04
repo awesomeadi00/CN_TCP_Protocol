@@ -44,6 +44,8 @@ void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, so
 
 // Global variables -----------------------------------------------------------------------------------------------------------------------------------------------------------
 receiver_buffer_slot receiver_buffer[BUFFER_SIZE]; // Circular buffer for out-of-order packets
+int oldest_processed_packet_DS = 0;				   // This is the datasize of the oldest processed packet
+int oldest_processed_packet = 0;				   // This is the oldest packet that has been processed by the reciever
 int rcv_base = 0;								   // Base sequence number - next expected in-order packet
 int highest_seqno = 0;							   // Highest sequence number seen so far
 
@@ -97,6 +99,29 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
 	free(ack_pkt);
 }
 
+void send_duplicate_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_len) {
+	// Create an empty ACK packet
+	tcp_packet *ack_pkt = make_packet(0);
+	ack_pkt->hdr.ackno = ackno;	  // Set ACK number
+	ack_pkt->hdr.ctr_flags = ACK; // Set ACK flag
+
+	// Log ACK details for debugging
+	VLOG(DEBUG, "Sending Duplicate ACK %d to client %s:%d",
+		 ackno,
+		 inet_ntoa(addr->sin_addr),
+		 ntohs(addr->sin_port));
+
+	// Send the ACK packet
+	if (sendto(sockfd, ack_pkt, TCP_HDR_SIZE, 0,
+			   (struct sockaddr *)addr, addr_len) < 0)
+	{
+		error("ERROR in sendto");
+	}
+
+	// Clean up
+	free(ack_pkt);
+}
+
 // Process packets that are in the buffer and ready to be delivered to the application
 void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, socklen_t addr_len)
 {
@@ -119,6 +144,10 @@ void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, so
 
 		// Send the ACK for the processed buffered packet
 		send_ack(sockfd, receiver_buffer[slot].packet->hdr.seqno, addr, addr_len);
+
+		// Update the oldest processed packet
+		oldest_processed_packet += oldest_processed_packet_DS;
+		oldest_processed_packet_DS = receiver_buffer[slot].packet->hdr.data_size;
 
 		// Update rcv_base to next expected sequence number
 		rcv_base += receiver_buffer[slot].packet -> hdr.data_size;
@@ -252,6 +281,11 @@ int main(int argc, char **argv)
 			// Send cumulative acknowledgment
 			send_ack(sockfd, rcv_base, &clientaddr, clientlen);
 
+			// Update the oldest processed packet
+			oldest_processed_packet += oldest_processed_packet_DS;
+
+			oldest_processed_packet_DS = received_pkt->hdr.data_size;
+
 			// Update rcv_base
 			rcv_base += received_pkt->hdr.data_size;
 
@@ -279,6 +313,9 @@ int main(int argc, char **argv)
 					highest_seqno = received_pkt->hdr.seqno;
 				}
 				VLOG(DEBUG, "Out of order packet received, buffered packet: %d", received_pkt->hdr.seqno);
+				
+				// Send a duplicate ACK for the oldest packet received
+				send_duplicate_ack(sockfd, oldest_processed_packet, &clientaddr, clientlen);
 			}
 
 			// Otherwise it has been buffered, hence we will discard it.
