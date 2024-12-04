@@ -214,7 +214,7 @@ void reset_congestion_control()
 	ssthresh = fmax(cwnd / 2, 2.0); // Adjust ssthresh
 	cwnd = 1.0;						// Reset CWND to 1
 	congestionState = SLOW_START;	// Transition to Slow Start
-	VLOG(INFO, "- Congestion Update: Timeout Occured! CWND reset to %.3f, SSTHRESH set to %.3f", cwnd, ssthresh);
+	VLOG(INFO, "- Congestion Update: Packet loss due to duplicate ACK! CWND reset to %.3f, SSTHRESH set to %.3f", cwnd, ssthresh);
 	VLOG(INFO, "- Congestion Update: Switching to Slow Start");
 }
 
@@ -377,19 +377,21 @@ void process_ack(tcp_packet *ack_pkt)
 	printf("\n");
 
 	int ack_no = ack_pkt->hdr.ackno; // Extract acknowledgment number
-	VLOG(DEBUG, "Recieved ACK %d", ack_no);
 
 	// If we receive an ack which is below the base (Duplicate ACK)
 	if (ack_no < send_base)
 	{
 		VLOG(DEBUG, "Received duplicate ACK for %d", ack_no);
-
+		
 		// Handle duplicate ACKs for fast retransmit only if 3 duplicates are detected
 		if (dup_ack_tracker.ack_number == ack_no)
 		{
 			dup_ack_tracker.count++;
 			if (dup_ack_tracker.count == 3)
 			{
+				// Reset CWND and SSTRESH due to triple duplicate ACK
+				reset_congestion_control();
+				
 				// Fast retransmit for the packet causing duplicate ACKs
 				handle_fast_retransmit(ack_no);
 				dup_ack_tracker.count = 0; // Reset duplicate ACK counter
@@ -409,6 +411,8 @@ void process_ack(tcp_packet *ack_pkt)
 	// - Gradually update the CWND value
 	// - Clear window slot buffers
 	// - Advance sliding window
+	VLOG(DEBUG, "Recieved ACK %d", ack_no);
+	
 	int slot = get_window_slot(ack_no);
 	consecutive_timeouts = 0;
 	update_rtt_and_rto(sender_window[slot].sent_time, sender_window[slot].is_retransmitted);
@@ -482,7 +486,7 @@ void resend_packets(int sig)
 		}
 
 		// Reset congestion values (CWND and SSTRESH)
-		reset_congestion_control();
+		// reset_congestion_control();
 
 		// Reset the timer after retransmitting all unacknowledged packets
 		reset_timer();

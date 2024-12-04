@@ -97,6 +97,29 @@ void send_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_le
 	free(ack_pkt);
 }
 
+void send_duplicate_ack(int sockfd, int ackno, struct sockaddr_in *addr, socklen_t addr_len) {
+	// Create an empty ACK packet
+	tcp_packet *ack_pkt = make_packet(0);
+	ack_pkt->hdr.ackno = ackno;	  // Set ACK number
+	ack_pkt->hdr.ctr_flags = ACK; // Set ACK flag
+
+	// Log ACK details for debugging
+	VLOG(DEBUG, "Sending Duplicate ACK (Receive Base) %d to client %s:%d",
+		 ackno,
+		 inet_ntoa(addr->sin_addr),
+		 ntohs(addr->sin_port));
+
+	// Send the ACK packet
+	if (sendto(sockfd, ack_pkt, TCP_HDR_SIZE, 0,
+			   (struct sockaddr *)addr, addr_len) < 0)
+	{
+		error("ERROR in sendto");
+	}
+
+	// Clean up
+	free(ack_pkt);
+}
+
 // Process packets that are in the buffer and ready to be delivered to the application
 void process_buffered_packets(FILE *fp, int sockfd, struct sockaddr_in *addr, socklen_t addr_len)
 {
@@ -279,6 +302,9 @@ int main(int argc, char **argv)
 					highest_seqno = received_pkt->hdr.seqno;
 				}
 				VLOG(DEBUG, "Out of order packet received, buffered packet: %d", received_pkt->hdr.seqno);
+				
+				// Send a duplicate ACK for receive base
+				send_duplicate_ack(sockfd, rcv_base, &clientaddr, clientlen);
 			}
 
 			// Otherwise it has been buffered, hence we will discard it.
